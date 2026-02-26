@@ -3,7 +3,9 @@ using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+#if PICO_XR
 using Unity.XR.PXR;
+#endif
 
 public class RecordingController : MonoBehaviour
 {
@@ -118,12 +120,22 @@ public class RecordingController : MonoBehaviour
 
     bool HandsVis()
     {
-        try {
-            var l = new HandJointsLocations(); var r = new HandJointsLocations();
+#if PICO_XR
+        try
+        {
+            var l = new HandJointsLocations();
+            var r = new HandJointsLocations();
             bool lk = PXR_HandTracking.GetJointLocations(HandType.HandLeft, ref l) && l.jointLocations?.Length > 0;
             bool rk = PXR_HandTracking.GetJointLocations(HandType.HandRight, ref r) && r.jointLocations?.Length > 0;
             return lk || rk;
-        } catch { return true; }
+        }
+        catch
+        {
+            return true;
+        }
+#else
+        return true;
+#endif
     }
 
     string Validate()

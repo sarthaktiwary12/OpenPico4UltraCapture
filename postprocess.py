@@ -10,14 +10,14 @@ Pipeline:
   4. Validate completeness against TELUS spec
   5. Package for delivery
 
-pip install opencv-python numpy pandas mediapipe tqdm scipy
+uv sync
 
 Usage:
-  python postprocess.py pull                          # Pull from PICO via ADB
-  python postprocess.py sync SESSION_DIR VIDEO.mp4    # Sync video + sensors
-  python postprocess.py blur VIDEO.mp4 OUTPUT.mp4     # Blur faces
-  python postprocess.py validate SESSION_DIR          # Validate session
-  python postprocess.py package SESSION_DIR VIDEO.mp4 # Full pipeline → delivery
+  uv run postprocess.py pull                          # Pull from PICO via ADB
+  uv run postprocess.py sync SESSION_DIR VIDEO.mp4    # Sync video + sensors
+  uv run postprocess.py blur VIDEO.mp4 OUTPUT.mp4     # Blur faces
+  uv run postprocess.py validate SESSION_DIR          # Validate session
+  uv run postprocess.py package SESSION_DIR VIDEO.mp4 # Full pipeline → delivery
 """
 
 import argparse, json, os, subprocess, sys
@@ -60,7 +60,7 @@ def cmd_pull(args):
     if vd.exists():
         for f in sorted(vd.rglob("*.mp4")):
             print(f"  {f.relative_to(vd)}")
-    print("\nDone. Next: python postprocess.py sync <session_dir> <video.mp4>")
+    print("\nDone. Next: uv run postprocess.py sync <session_dir> <video.mp4>")
 
 # ── 2. Video-Sensor Sync ─────────────────────────────────────
 

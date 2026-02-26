@@ -112,7 +112,7 @@ XR Origin (with PXR_Manager)
 ### 3. Post-Processing (PC)
 
 ```bash
-pip install -r Tools/requirements.txt
+uv sync
 # Also need ffmpeg for audio analysis:
 sudo apt install ffmpeg  # or brew install ffmpeg
 ```
@@ -185,12 +185,12 @@ sudo apt install ffmpeg  # or brew install ffmpeg
 
 ### Pull from device
 ```bash
-python Tools/postprocess.py pull -o ./raw
+uv run postprocess.py pull -o ./raw
 ```
 
 ### Full pipeline (sync + blur + validate + package)
 ```bash
-python Tools/postprocess.py package \
+uv run postprocess.py package \
   ./raw/sessions/20260226_143000_pick_place_utensils \
   ./raw/video/spatial_recording_001.mp4 \
   -o ./delivery
@@ -199,13 +199,13 @@ python Tools/postprocess.py package \
 ### Individual steps
 ```bash
 # Sync only
-python Tools/postprocess.py sync SESSION_DIR VIDEO.mp4
+uv run postprocess.py sync SESSION_DIR VIDEO.mp4
 
 # Blur only
-python Tools/postprocess.py blur input.mp4 output_blurred.mp4
+uv run postprocess.py blur input.mp4 output_blurred.mp4
 
 # Validate only
-python Tools/postprocess.py validate SESSION_DIR
+uv run postprocess.py validate SESSION_DIR
 ```
 
 ---
