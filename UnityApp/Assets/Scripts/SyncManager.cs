@@ -56,9 +56,9 @@ public class SyncManager : MonoBehaviour
         try
         {
             var ht = side == "left" ? HandType.HandLeft : HandType.HandRight;
-            var jl = new HandJointsLocations();
+            var jl = new HandJointLocations();
             if (!PXR_HandTracking.GetJointLocations(ht, ref jl) || jl.jointLocations == null || jl.jointLocations.Length < 1) return false;
-            if ((jl.jointLocations[0].locationStatus & (ulong)HandLocationStatus.PositionValid) == 0) return false;
+            if (((ulong)jl.jointLocations[0].locationStatus & (ulong)HandLocationStatus.PositionValid) == 0) return false;
             pos = jl.jointLocations[0].pose.Position.ToVector3();
             return true;
         }

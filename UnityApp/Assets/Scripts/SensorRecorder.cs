@@ -116,14 +116,14 @@ public class SensorRecorder : MonoBehaviour
         try
         {
             var ht = label == "left" ? HandType.HandLeft : HandType.HandRight;
-            var jl = new HandJointsLocations();
+            var jl = new HandJointLocations();
             if (!PXR_HandTracking.GetJointLocations(ht, ref jl) || jl.jointLocations == null) return;
             int n = Mathf.Min(jl.jointLocations.Length, 26);
             for (int i = 0; i < n; i++)
             {
                 var j = jl.jointLocations[i];
-                if ((j.locationStatus & (ulong)HandLocationStatus.PositionValid) == 0 &&
-                    (j.locationStatus & (ulong)HandLocationStatus.OrientationValid) == 0) continue;
+                if ((((ulong)j.locationStatus & (ulong)HandLocationStatus.PositionValid) == 0) &&
+                    (((ulong)j.locationStatus & (ulong)HandLocationStatus.OrientationValid) == 0)) continue;
                 var p = j.pose.Position.ToVector3();
                 var q = j.pose.Orientation.ToQuat();
                 string jn = i < JN.Length ? JN[i] : $"J{i}";

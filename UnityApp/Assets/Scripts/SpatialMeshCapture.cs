@@ -31,13 +31,13 @@ public class SpatialMeshCapture : MonoBehaviour
     void Snap()
     {
         var verts = new List<Vector3>(); var tris = new List<int>();
-        foreach (var mf in FindObjectsOfType<MeshFilter>())
+        foreach (var mf in FindObjectsByType<MeshFilter>(FindObjectsSortMode.None))
         {
             if (mf.sharedMesh == null) continue;
             string nm = mf.gameObject.name.ToLower();
             bool isSpatial = nm.Contains("spatial") || nm.Contains("mesh");
 #if PICO_XR
-            isSpatial |= mf.GetComponent<PXR_MeshRendering>() != null;
+            isSpatial |= mf.GetComponentInParent<PXR_SpatialMeshManager>() != null;
 #endif
             if (mf.transform.parent != null) { string pn = mf.transform.parent.name.ToLower(); isSpatial |= pn.Contains("spatial") || pn.Contains("mesh"); }
             if (!isSpatial) continue;
