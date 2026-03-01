@@ -11,12 +11,12 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 261e5777ad4ae374eb318821653de6aa, type: 3}
   m_Name: PXR_ProjectSetting
-  m_EditorClassIdentifier: Unity.XR.PICO::Unity.XR.PXR.PXR_ProjectSetting
+  m_EditorClassIdentifier: 
   useContentProtect: 0
-  handTracking: 0
+  handTracking: 1
   adaptiveHand: 0
   highFrequencyHand: 0
-  openMRC: 1
+  openMRC: 0
   faceTracking: 0
   lipsyncTracking: 0
   eyeTracking: 0
@@ -26,14 +26,14 @@ MonoBehaviour:
   latelatching: 0
   latelatchingDebug: 0
   enableSubsampled: 0
-  bodyTracking: 0
+  bodyTracking: 1
   adaptiveResolution: 0
   stageMode: 0
   videoSeeThrough: 0
   spatialAnchor: 0
   sceneCapture: 0
   sharedAnchor: 0
-  spatialMesh: 0
+  spatialMesh: 1
   meshLod: 0
   superResolution: 0
   normalSharpening: 0

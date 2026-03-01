@@ -6,6 +6,7 @@ using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.UI;
 
 public static class BuildAndroid
 {
@@ -14,6 +15,7 @@ public static class BuildAndroid
 
     public static void BuildCI()
     {
+        EnsurePXRProjectSettings();
         EnsureScene();
 
         EditorBuildSettings.scenes = new[]
@@ -73,12 +75,77 @@ public static class BuildAndroid
         Debug.Log("PICO Platform appID configuration step finished.");
     }
 
+    private static void EnsurePXRProjectSettings()
+    {
+        var type = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .SelectMany(SafeGetTypes)
+            .FirstOrDefault(t => t.FullName == "Unity.XR.PXR.PXR_ProjectSetting");
+        if (type == null) return;
+
+        var getInstance = type.GetMethod("GetProjectConfig",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        var instance = getInstance?.Invoke(null, null);
+        if (instance == null) return;
+
+        void SetBool(string name, bool val) {
+            var f = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (f != null) { if (f.FieldType == typeof(bool)) f.SetValue(instance, val); else if (f.FieldType == typeof(int)) f.SetValue(instance, val ? 1 : 0); }
+        }
+        void SetInt(string name, int val) {
+            var f = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (f != null) f.SetValue(instance, val);
+        }
+
+        SetBool("handTracking", true);
+        SetBool("bodyTracking", true);
+        SetBool("spatialMesh", true);
+        SetBool("videoSeeThrough", false);
+        SetBool("openMRC", false);
+
+        if (instance is UnityEngine.Object obj) EditorUtility.SetDirty(obj);
+        AssetDatabase.SaveAssets();
+        Debug.Log("[Build] PXR_ProjectSetting configured: hand+body+mesh.");
+    }
+
     private static void EnsureScene()
     {
         Directory.CreateDirectory("Assets/Scenes");
 
-        var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+        var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
+        // ── XR Origin hierarchy ──
+        var xrOriginGo = new GameObject("XR Origin");
+        AddXROriginComponent(xrOriginGo);
+
+        var cameraOffsetGo = new GameObject("Camera Offset");
+        cameraOffsetGo.transform.SetParent(xrOriginGo.transform, false);
+
+        var cameraGo = new GameObject("Main Camera");
+        cameraGo.tag = "MainCamera";
+        cameraGo.transform.SetParent(cameraOffsetGo.transform, false);
+        var cam = cameraGo.AddComponent<Camera>();
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0.1f, 0.1f, 0.3f, 1f);
+        cameraGo.AddComponent<AudioListener>();
+        cameraGo.AddComponent<PassthroughEnabler>();
+        AddTrackedPoseDriver(cameraGo);
+
+        // Point XROrigin.CameraFloorOffsetObject and Camera at the right objects
+        ConfigureXROrigin(xrOriginGo, cameraOffsetGo, cameraGo);
+
+        // ── Directional Light ──
+        var lightGo = new GameObject("Directional Light");
+        var light = lightGo.AddComponent<Light>();
+        light.type = LightType.Directional;
+        lightGo.transform.rotation = Quaternion.Euler(50, -30, 0);
+        lightGo.transform.position = new Vector3(0, 3, 0);
+
+        // ── PICO SDK objects ──
+        var pxrManagerComp = AddPXRManager();
+        AddComponentByReflection("PXR_SpatialMeshManager", "PXR_SpatialMeshManager");
+
+        // ── System objects ──
         var imuGo = new GameObject("NativeIMUBridge");
         imuGo.AddComponent<NativeIMUBridge>();
 
@@ -94,12 +161,71 @@ public static class BuildAndroid
         var mesh = meshGo.AddComponent<SpatialMeshCapture>();
         mesh.sensorRecorder = sensor;
 
-        AddOptionalPicoRuntimeObjects();
+        var bodyGo = new GameObject("BodyTrackingRecorder");
+        var body = bodyGo.AddComponent<BodyTrackingRecorder>();
+        body.sensorRecorder = sensor;
 
-        var autoGo = new GameObject("AutoSessionStarter");
-        var auto = autoGo.AddComponent<AutoSessionStarter>();
-        auto.sensor = sensor;
-        auto.mesh = mesh;
+        // ── Screen Space Overlay Canvas (2D panel mode) ──
+        var canvasGo = new GameObject("RecordingCanvas");
+        var canvas = canvasGo.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        var scaler = canvasGo.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(506, 900);
+        scaler.matchWidthOrHeight = 0.5f;
+        canvasGo.AddComponent<GraphicRaycaster>();
+
+        // Full-screen toggle button — pull trigger anywhere on the panel to toggle
+        var btnGo = new GameObject("BtnFullScreen");
+        btnGo.transform.SetParent(canvasGo.transform, false);
+        var btnImage = btnGo.AddComponent<Image>();
+        btnImage.color = new Color(0.1f, 0.3f, 0.1f, 1f);
+        var btnToggle = btnGo.AddComponent<Button>();
+        btnToggle.targetGraphic = btnImage;
+        var btnRt = btnGo.GetComponent<RectTransform>();
+        btnRt.anchorMin = Vector2.zero;
+        btnRt.anchorMax = Vector2.one;
+        btnRt.offsetMin = Vector2.zero;
+        btnRt.offsetMax = Vector2.zero;
+
+        // Big label text (RECORD / STOP)
+        var labelGo = new GameObject("Label");
+        labelGo.transform.SetParent(btnGo.transform, false);
+        var btnLabel = labelGo.AddComponent<Text>();
+        btnLabel.text = "RECORD";
+        btnLabel.fontSize = 64;
+        btnLabel.fontStyle = FontStyle.Bold;
+        btnLabel.alignment = TextAnchor.MiddleCenter;
+        btnLabel.color = Color.white;
+        btnLabel.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        var labelRt = labelGo.GetComponent<RectTransform>();
+        labelRt.anchorMin = new Vector2(0, 0.3f);
+        labelRt.anchorMax = new Vector2(1, 0.7f);
+        labelRt.offsetMin = Vector2.zero;
+        labelRt.offsetMax = Vector2.zero;
+
+        // Status text below the label
+        var txtStatusGo = CreateUIText(btnGo.transform, "TxtStatus", "Pull trigger to\nstart recording",
+            Vector2.zero, Vector2.zero, 32);
+        var txtStatus = txtStatusGo.GetComponent<Text>();
+        var statusRt = txtStatusGo.GetComponent<RectTransform>();
+        statusRt.anchorMin = new Vector2(0, 0.05f);
+        statusRt.anchorMax = new Vector2(1, 0.35f);
+        statusRt.offsetMin = new Vector2(20, 0);
+        statusRt.offsetMax = new Vector2(-20, 0);
+        statusRt.anchoredPosition = Vector2.zero;
+
+        // ── SimpleRecordingController ──
+        var controllerGo = new GameObject("SimpleRecordingController");
+        var controller = controllerGo.AddComponent<SimpleRecordingController>();
+        controller.sensorRecorder = sensor;
+        controller.syncManager = sync;
+        controller.spatialMeshCapture = mesh;
+        controller.bodyTrackingRecorder = body;
+        controller.btnToggle = btnToggle;
+        controller.txtStatus = txtStatus;
+        controller.txtButtonLabel = btnLabel;
+        controller.btnImage = btnImage;
 
         EditorSceneManager.SaveScene(scene, ScenePath);
     }
@@ -198,7 +324,9 @@ public static class BuildAndroid
         var initManagerOnStartProp = generalSettings?.GetType().GetProperty(
             "InitManagerOnStart",
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        initManagerOnStartProp?.SetValue(generalSettings, true);
+        initManagerOnStartProp?.SetValue(generalSettings, false);
+
+        // Keep AutomaticLoading/Running as-is from asset file (0 = 2D panel mode)
 
         if (perBuildTarget is UnityEngine.Object perBuildObject)
         {
@@ -252,10 +380,94 @@ public static class BuildAndroid
         Debug.Log($"Configured PICO Platform appID from {PicoAppIdEnvVar}.");
     }
 
-    private static void AddOptionalPicoRuntimeObjects()
+    private static void AddTrackedPoseDriver(GameObject go)
     {
-        AddComponentByReflection("PXR_Manager", "PXR_Manager");
-        AddComponentByReflection("PXR_SpatialMeshManager", "PXR_SpatialMeshManager");
+        var type = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .SelectMany(SafeGetTypes)
+            .FirstOrDefault(t => t.FullName == "UnityEngine.InputSystem.XR.TrackedPoseDriver" && typeof(Component).IsAssignableFrom(t));
+
+        if (type != null)
+        {
+            go.AddComponent(type);
+        }
+        else
+        {
+            // Fallback to legacy TrackedPoseDriver
+            var legacyType = AppDomain.CurrentDomain
+                .GetAssemblies()
+                .SelectMany(SafeGetTypes)
+                .FirstOrDefault(t => t.FullName == "UnityEngine.SpatialTracking.TrackedPoseDriver" && typeof(Component).IsAssignableFrom(t));
+            if (legacyType != null)
+                go.AddComponent(legacyType);
+            else
+                Debug.LogWarning("[Build] No TrackedPoseDriver type found.");
+        }
+    }
+
+    private static void AddXROriginComponent(GameObject go)
+    {
+        var xrOriginType = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .SelectMany(SafeGetTypes)
+            .FirstOrDefault(t => t.FullName == "Unity.XR.CoreUtils.XROrigin" && typeof(Component).IsAssignableFrom(t));
+
+        if (xrOriginType != null)
+        {
+            go.AddComponent(xrOriginType);
+        }
+        else
+        {
+            Debug.LogWarning("[Build] Unity.XR.CoreUtils.XROrigin not found — XR Origin component skipped.");
+        }
+    }
+
+    private static void ConfigureXROrigin(GameObject xrOriginGo, GameObject cameraOffsetGo, GameObject cameraGo)
+    {
+        var xrOrigin = xrOriginGo.GetComponents<Component>()
+            .FirstOrDefault(c => c.GetType().FullName == "Unity.XR.CoreUtils.XROrigin");
+        if (xrOrigin == null) return;
+
+        var originType = xrOrigin.GetType();
+
+        var offsetProp = originType.GetProperty("CameraFloorOffsetObject",
+            BindingFlags.Public | BindingFlags.Instance);
+        offsetProp?.SetValue(xrOrigin, cameraOffsetGo);
+
+        var cameraProp = originType.GetProperty("Camera",
+            BindingFlags.Public | BindingFlags.Instance);
+        cameraProp?.SetValue(xrOrigin, cameraGo.GetComponent<Camera>());
+    }
+
+    private static Component AddPXRManager()
+    {
+        var type = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .SelectMany(SafeGetTypes)
+            .FirstOrDefault(t => t.Name == "PXR_Manager" && typeof(Component).IsAssignableFrom(t));
+
+        if (type == null) return null;
+
+        var go = new GameObject("PXR_Manager");
+        var component = go.AddComponent(type);
+
+        // Disable MRC by default
+        var openMrcField = type.GetField("openMRC",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        openMrcField?.SetValue(component, false);
+
+        // Enable body tracking
+        var bodyTrackingField = type.GetField("bodyTracking",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (bodyTrackingField != null)
+        {
+            if (bodyTrackingField.FieldType == typeof(bool))
+                bodyTrackingField.SetValue(component, true);
+            else if (bodyTrackingField.FieldType == typeof(int))
+                bodyTrackingField.SetValue(component, 1);
+        }
+
+        return component;
     }
 
     private static void AddComponentByReflection(string gameObjectName, string typeName)
@@ -268,16 +480,53 @@ public static class BuildAndroid
         if (type == null) return;
 
         var go = new GameObject(gameObjectName);
-        var component = go.AddComponent(type);
+        go.AddComponent(type);
+    }
 
-        // Disable MRC by default to avoid external camera/compositor paths in headless capture builds.
-        if (typeName == "PXR_Manager")
-        {
-            var openMrcField = type.GetField(
-                "openMRC",
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            openMrcField?.SetValue(component, false);
-        }
+    private static GameObject CreateButton(Transform parent, string name, string label, Color color, Vector2 pos, Vector2 size)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        var img = go.AddComponent<Image>();
+        img.color = color;
+        var btn = go.AddComponent<Button>();
+        btn.targetGraphic = img;
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchoredPosition = pos;
+        rt.sizeDelta = size;
+
+        var txtGo = new GameObject("Text");
+        txtGo.transform.SetParent(go.transform, false);
+        var txt = txtGo.AddComponent<Text>();
+        txt.text = label;
+        txt.fontSize = 40;
+        txt.alignment = TextAnchor.MiddleCenter;
+        txt.fontStyle = FontStyle.Bold;
+        txt.color = Color.white;
+        txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        var txtRt = txtGo.GetComponent<RectTransform>();
+        txtRt.anchorMin = Vector2.zero;
+        txtRt.anchorMax = Vector2.one;
+        txtRt.offsetMin = Vector2.zero;
+        txtRt.offsetMax = Vector2.zero;
+
+        return go;
+    }
+
+    private static GameObject CreateUIText(Transform parent, string name, string text, Vector2 pos, Vector2 size, int fontSize = 24)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        var txt = go.AddComponent<Text>();
+        txt.text = text;
+        txt.fontSize = fontSize;
+        txt.alignment = TextAnchor.MiddleCenter;
+        txt.color = Color.white;
+        txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchoredPosition = pos;
+        rt.sizeDelta = size;
+        return go;
     }
 
     private static Type[] SafeGetTypes(Assembly assembly)

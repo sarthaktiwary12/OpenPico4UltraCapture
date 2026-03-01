@@ -116,14 +116,14 @@ public class SensorRecorder : MonoBehaviour
         try
         {
             var ht = label == "left" ? HandType.HandLeft : HandType.HandRight;
-            var jl = new HandJointsLocations();
+            var jl = new HandJointLocations();
             if (!PXR_HandTracking.GetJointLocations(ht, ref jl) || jl.jointLocations == null) return;
             int n = Mathf.Min(jl.jointLocations.Length, 26);
             for (int i = 0; i < n; i++)
             {
                 var j = jl.jointLocations[i];
-                if ((j.locationStatus & (ulong)HandLocationStatus.PositionValid) == 0 &&
-                    (j.locationStatus & (ulong)HandLocationStatus.OrientationValid) == 0) continue;
+                if ((((ulong)j.locationStatus & (ulong)HandLocationStatus.PositionValid) == 0) &&
+                    (((ulong)j.locationStatus & (ulong)HandLocationStatus.OrientationValid) == 0)) continue;
                 var p = j.pose.Position.ToVector3();
                 var q = j.pose.Orientation.ToQuat();
                 string jn = i < JN.Length ? JN[i] : $"J{i}";
@@ -176,6 +176,18 @@ public class SensorRecorder : MonoBehaviour
         j.AppendLine("  \"hand_tracking\": { \"joints_per_hand\": 26, \"model\": \"OpenXR XR_EXT_hand_tracking\",");
         j.AppendLine("    \"per_joint\": [\"position_xyz_m\", \"orientation_quat\", \"radius_m\"],");
         j.Append("    \"joint_names\": ["); for (int i=0;i<JN.Length;i++) { j.Append($"\"{JN[i]}\""); if(i<JN.Length-1) j.Append(","); } j.AppendLine("]");
+        j.AppendLine("  },");
+        j.AppendLine("  \"body_tracking\": {");
+        j.AppendLine("    \"joints\": 24, \"model\": \"PICO BodyTrackerResult\",");
+        j.AppendLine("    \"per_joint\": [\"position_xyz_m\", \"orientation_quat\", \"confidence\"],");
+        j.AppendLine("    \"joint_names\": [\"Pelvis\",\"LeftHip\",\"RightHip\",\"Spine1\",");
+        j.AppendLine("      \"LeftKnee\",\"RightKnee\",\"Spine2\",");
+        j.AppendLine("      \"LeftAnkle\",\"RightAnkle\",\"Spine3\",");
+        j.AppendLine("      \"LeftFoot\",\"RightFoot\",\"Neck\",");
+        j.AppendLine("      \"LeftCollar\",\"RightCollar\",\"Head\",");
+        j.AppendLine("      \"LeftShoulder\",\"RightShoulder\",\"LeftElbow\",\"RightElbow\",");
+        j.AppendLine("      \"LeftWrist\",\"RightWrist\",\"LeftHand\",\"RightHand\"],");
+        j.AppendLine("    \"output_file\": \"body_pose.csv\"");
         j.AppendLine("  },");
         j.AppendLine($"  \"imu\": {{ \"location\": \"HMD\", \"accel_unit\": \"m/s^2\", \"gyro_unit\": \"rad/s\", \"source\": \"{(_nativeImu?"native_android":"unity_fallback")}\" }},");
         j.AppendLine("  \"sync\": {");

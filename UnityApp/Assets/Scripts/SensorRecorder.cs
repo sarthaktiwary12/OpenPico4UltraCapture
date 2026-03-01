@@ -177,6 +177,18 @@ public class SensorRecorder : MonoBehaviour
         j.AppendLine("    \"per_joint\": [\"position_xyz_m\", \"orientation_quat\", \"radius_m\"],");
         j.Append("    \"joint_names\": ["); for (int i=0;i<JN.Length;i++) { j.Append($"\"{JN[i]}\""); if(i<JN.Length-1) j.Append(","); } j.AppendLine("]");
         j.AppendLine("  },");
+        j.AppendLine("  \"body_tracking\": {");
+        j.AppendLine("    \"joints\": 24, \"model\": \"PICO BodyTrackerResult\",");
+        j.AppendLine("    \"per_joint\": [\"position_xyz_m\", \"orientation_quat\", \"confidence\"],");
+        j.AppendLine("    \"joint_names\": [\"Pelvis\",\"LeftHip\",\"RightHip\",\"Spine1\",");
+        j.AppendLine("      \"LeftKnee\",\"RightKnee\",\"Spine2\",");
+        j.AppendLine("      \"LeftAnkle\",\"RightAnkle\",\"Spine3\",");
+        j.AppendLine("      \"LeftFoot\",\"RightFoot\",\"Neck\",");
+        j.AppendLine("      \"LeftCollar\",\"RightCollar\",\"Head\",");
+        j.AppendLine("      \"LeftShoulder\",\"RightShoulder\",\"LeftElbow\",\"RightElbow\",");
+        j.AppendLine("      \"LeftWrist\",\"RightWrist\",\"LeftHand\",\"RightHand\"],");
+        j.AppendLine("    \"output_file\": \"body_pose.csv\"");
+        j.AppendLine("  },");
         j.AppendLine($"  \"imu\": {{ \"location\": \"HMD\", \"accel_unit\": \"m/s^2\", \"gyro_unit\": \"rad/s\", \"source\": \"{(_nativeImu?"native_android":"unity_fallback")}\" }},");
         j.AppendLine("  \"sync\": {");
         j.AppendLine($"    \"method\": \"clap_gesture + audio_beep + wallclock\",");

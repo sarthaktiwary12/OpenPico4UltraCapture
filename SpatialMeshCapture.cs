@@ -15,7 +15,7 @@ public class SpatialMeshCapture : MonoBehaviour
     public void StartCapture(string sessionDir)
     {
         _dir = Path.Combine(sessionDir, "depth_mesh"); Directory.CreateDirectory(_dir);
-        _idx = new StreamWriter(Path.Combine(sessionDir, "depth_mesh_index.csv"), false, new UTF8Encoding(false));
+        _idx = new StreamWriter(Path.Combine(_dir, "depth_mesh_index.csv"), false, new UTF8Encoding(false));
         _idx.WriteLine("ts_s,frame,snapshot,filename,verts,tris"); _n = 0; _last = Time.realtimeSinceStartup; _on = true;
     }
 
@@ -31,13 +31,13 @@ public class SpatialMeshCapture : MonoBehaviour
     void Snap()
     {
         var verts = new List<Vector3>(); var tris = new List<int>();
-        foreach (var mf in FindObjectsOfType<MeshFilter>())
+        foreach (var mf in FindObjectsByType<MeshFilter>(FindObjectsSortMode.None))
         {
             if (mf.sharedMesh == null) continue;
             string nm = mf.gameObject.name.ToLower();
             bool isSpatial = nm.Contains("spatial") || nm.Contains("mesh");
 #if PICO_XR
-            isSpatial |= mf.GetComponent<PXR_MeshRendering>() != null;
+            isSpatial |= mf.GetComponentInParent<PXR_SpatialMeshManager>() != null;
 #endif
             if (mf.transform.parent != null) { string pn = mf.transform.parent.name.ToLower(); isSpatial |= pn.Contains("spatial") || pn.Contains("mesh"); }
             if (!isSpatial) continue;

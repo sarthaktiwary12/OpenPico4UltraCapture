@@ -15,7 +15,7 @@ public class SpatialMeshCapture : MonoBehaviour
     public void StartCapture(string sessionDir)
     {
         _dir = Path.Combine(sessionDir, "depth_mesh"); Directory.CreateDirectory(_dir);
-        _idx = new StreamWriter(Path.Combine(sessionDir, "depth_mesh_index.csv"), false, new UTF8Encoding(false));
+        _idx = new StreamWriter(Path.Combine(_dir, "depth_mesh_index.csv"), false, new UTF8Encoding(false));
         _idx.WriteLine("ts_s,frame,snapshot,filename,verts,tris"); _n = 0; _last = Time.realtimeSinceStartup; _on = true;
     }
 
