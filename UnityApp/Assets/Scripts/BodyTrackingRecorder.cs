@@ -45,10 +45,14 @@ public class BodyTrackingRecorder : MonoBehaviour
         Debug.Log("[Body] Capture stopped.");
     }
 
+    private int _frameCount;
+
     void Update()
     {
         if (!_on || !_available || sensorRecorder == null || !sensorRecorder.IsRecording) return;
         SampleBody();
+        _frameCount++;
+        if (_frameCount % 60 == 0) _w?.Flush();
     }
 
     void SampleBody()

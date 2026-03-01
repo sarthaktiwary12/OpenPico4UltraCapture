@@ -1,5 +1,12 @@
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.XR;
+#if PICO_XR
+using Unity.XR.PICO.TOBSupport;
+#endif
 
 public class SimpleRecordingController : MonoBehaviour
 {
@@ -17,23 +24,109 @@ public class SimpleRecordingController : MonoBehaviour
 
     private bool _recording;
     private float _startTime;
+    private bool _triggerWasDown;
+    private string _sessionDir;
+    private long _videoStartTimeMs;
+
+    // Known PICO video save directories
+    static readonly string[] VideoDirs = {
+        "/sdcard/PICO/SpatialVideo",
+        "/sdcard/DCIM/ScreenRecording",
+        "/sdcard/PICO/Videos",
+        "/sdcard/DCIM/Camera",
+        "/sdcard/Movies",
+        "/sdcard/DCIM"
+    };
 
     void Start()
     {
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
         SetIdle();
-        Debug.Log("[Controller] Ready. Pull trigger anywhere on panel to toggle recording.");
+        Debug.Log("[Controller] Ready. Press A or Trigger to toggle recording.");
+        StartCoroutine(LogDiagnostics());
+    }
+
+    System.Collections.IEnumerator LogDiagnostics()
+    {
+        yield return new WaitForSeconds(2f);
+        var xrDisplay = UnityEngine.XR.XRSettings.isDeviceActive;
+        var xrModel = UnityEngine.XR.XRSettings.loadedDeviceName;
+        Debug.Log($"[Diag] XR active={xrDisplay}, device={xrModel}, Screen={Screen.width}x{Screen.height}");
+        Debug.Log($"[Diag] sensorRecorder={sensorRecorder != null}, spatialMesh={spatialMeshCapture != null}, bodyTracker={bodyTrackingRecorder != null}");
+
+        var devices = new System.Collections.Generic.List<UnityEngine.XR.InputDevice>();
+        UnityEngine.XR.InputDevices.GetDevices(devices);
+        Debug.Log($"[Diag] XR devices found: {devices.Count}");
+        foreach (var d in devices)
+            Debug.Log($"[Diag]   device: {d.name} ({d.characteristics})");
+
+        var hmd = UnityEngine.XR.InputDevices.GetDeviceAtXRNode(UnityEngine.XR.XRNode.Head);
+        Debug.Log($"[Diag] HMD valid={hmd.isValid}");
+        if (hmd.isValid)
+        {
+            hmd.TryGetFeatureValue(UnityEngine.XR.CommonUsages.devicePosition, out Vector3 p);
+            hmd.TryGetFeatureValue(UnityEngine.XR.CommonUsages.deviceRotation, out Quaternion r);
+            Debug.Log($"[Diag] HMD pos=({p.x:F2},{p.y:F2},{p.z:F2}) rot=({r.x:F2},{r.y:F2},{r.z:F2},{r.w:F2})");
+        }
+
+        var nativeImu = NativeIMUBridge.Instance;
+        Debug.Log($"[Diag] NativeIMU active={nativeImu?.IsActive}, accel={nativeImu?.Acceleration}");
     }
 
     void Update()
     {
+        CheckControllerInput();
+
         if (_recording)
         {
             float elapsed = Time.time - _startTime;
             int min = (int)(elapsed / 60f);
             int sec = (int)(elapsed % 60f);
-            SetStatus($"RECORDING\n\n{min:D2}:{sec:D2}\n\nFrames: {sensorRecorder.FrameIndex}");
+            SetStatus($"REC  {min:D2}:{sec:D2}\n\nFrames: {sensorRecorder.FrameIndex}");
         }
+    }
+
+    void CheckControllerInput()
+    {
+        bool down = false;
+
+        var right = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
+        if (right.isValid)
+        {
+            if (right.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb)
+                down = true;
+            if (right.TryGetFeatureValue(CommonUsages.primaryButton, out bool ab) && ab)
+                down = true;
+        }
+
+        var left = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
+        if (left.isValid)
+        {
+            if (left.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb)
+                down = true;
+            if (left.TryGetFeatureValue(CommonUsages.primaryButton, out bool ab) && ab)
+                down = true;
+        }
+
+        if (!right.isValid && !left.isValid)
+        {
+            var devices = new List<InputDevice>();
+            InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.Controller, devices);
+            foreach (var dev in devices)
+            {
+                if (dev.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb)
+                    down = true;
+                if (dev.TryGetFeatureValue(CommonUsages.primaryButton, out bool ab) && ab)
+                    down = true;
+            }
+        }
+
+        if (down && !_triggerWasDown)
+        {
+            Debug.Log("[Controller] Controller input -> Toggle");
+            OnToggle();
+        }
+        _triggerWasDown = down;
     }
 
     void OnToggle()
@@ -49,22 +142,27 @@ public class SimpleRecordingController : MonoBehaviour
     {
         try
         {
+            // Start sensor recording
             sensorRecorder.StartSession("capture", "general");
-            string dir = sensorRecorder.GetSessionDir();
+            _sessionDir = sensorRecorder.GetSessionDir();
 
-            spatialMeshCapture?.StartCapture(dir);
-            bodyTrackingRecorder?.StartCapture(dir);
+            spatialMeshCapture?.StartCapture(_sessionDir);
+            bodyTrackingRecorder?.StartCapture(_sessionDir);
 
             sensorRecorder.LogAction("task_start", "capture", "user_initiated");
+
+            // Start POV video recording
+            _videoStartTimeMs = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            StartVideoRecording();
 
             _recording = true;
             _startTime = Time.time;
 
             if (txtButtonLabel != null) txtButtonLabel.text = "STOP";
             if (btnImage != null) btnImage.color = new Color(0.8f, 0.2f, 0.2f, 1f);
-            SetStatus("RECORDING\n\n00:00\n\nFrames: 0");
+            SetStatus("REC  00:00\n\nFrames: 0");
 
-            Debug.Log("[Controller] RECORDING STARTED -> " + dir);
+            Debug.Log("[Controller] RECORDING STARTED -> " + _sessionDir);
         }
         catch (System.Exception e)
         {
@@ -79,6 +177,9 @@ public class SimpleRecordingController : MonoBehaviour
         {
             sensorRecorder.LogAction("task_end", "capture", "user_initiated");
 
+            // Stop POV video recording
+            StopVideoRecording();
+
             bodyTrackingRecorder?.StopCapture();
             spatialMeshCapture?.StopCapture();
             sensorRecorder.StopSession();
@@ -88,22 +189,232 @@ public class SimpleRecordingController : MonoBehaviour
 
             _recording = false;
 
-            if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
-            if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
+            if (txtButtonLabel != null) txtButtonLabel.text = "SAVING...";
+            if (btnImage != null) btnImage.color = new Color(0.6f, 0.6f, 0.1f, 1f);
+            SetStatus($"Saving video...\n{frames} frames, {dur:F1}s");
 
-            SetStatus($"Saved!\n{frames} frames\n{dur:F1}s");
+            // Wait a moment for video file to finalize, then find and copy it
+            StartCoroutine(FindAndCopyVideo(dur, frames));
+
             Debug.Log($"[Controller] RECORDING STOPPED. {frames} frames, {dur:F1}s.");
         }
         catch (System.Exception e)
         {
             Debug.LogError("[Controller] Failed to stop recording: " + e.Message);
             _recording = false;
+            SetIdle();
         }
+    }
+
+    void StartVideoRecording()
+    {
+#if PICO_XR
+        try
+        {
+            PXR_Enterprise.Record();
+            sensorRecorder.LogAction("video_start", "pxr_enterprise", "system_recording");
+            Debug.Log("[Video] PXR_Enterprise.Record() called — video recording started.");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] PXR_Enterprise.Record() failed: {e.Message}. Trying shell fallback.");
+            StartVideoShellFallback();
+        }
+#else
+        StartVideoShellFallback();
+#endif
+    }
+
+    void StopVideoRecording()
+    {
+#if PICO_XR
+        try
+        {
+            PXR_Enterprise.Record(); // Toggle off
+            sensorRecorder.LogAction("video_stop", "pxr_enterprise", "system_recording");
+            Debug.Log("[Video] PXR_Enterprise.Record() called — video recording stopped.");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] PXR_Enterprise stop failed: {e.Message}");
+            StopVideoShellFallback();
+        }
+#else
+        StopVideoShellFallback();
+#endif
+    }
+
+    void StartVideoShellFallback()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            string outPath = $"/sdcard/DCIM/ScreenRecording/capture_{_videoStartTimeMs}.mp4";
+            using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+            using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
+            using var runtime = act.Call<AndroidJavaObject>("getRuntime");
+            // Use am broadcast to trigger system recording
+            runtime?.Call<AndroidJavaObject>("exec", $"am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command start");
+            Debug.Log("[Video] Shell fallback: triggered system recording via broadcast.");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] Shell fallback also failed: {e.Message}");
+        }
+#endif
+    }
+
+    void StopVideoShellFallback()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+            using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
+            using var runtime = act.Call<AndroidJavaObject>("getRuntime");
+            runtime?.Call<AndroidJavaObject>("exec", $"am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command stop");
+            Debug.Log("[Video] Shell fallback: stopped system recording via broadcast.");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] Shell fallback stop failed: {e.Message}");
+        }
+#endif
+    }
+
+    IEnumerator FindAndCopyVideo(float dur, long frames)
+    {
+        // Give the system recorder time to finalize the file
+        yield return new WaitForSeconds(3f);
+
+        string videoPath = FindNewestVideo();
+        if (videoPath != null && _sessionDir != null)
+        {
+            try
+            {
+                string destPath = Path.Combine(_sessionDir, "pov_video.mp4");
+                File.Copy(videoPath, destPath, true);
+                sensorRecorder?.LogAction("video_saved", "pov_video.mp4", $"src={videoPath}");
+                Debug.Log($"[Video] Copied to session: {destPath}");
+
+                if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
+                if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
+                SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[Video] Failed to copy video: {e.Message}");
+                if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
+                if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
+                SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo at: {videoPath}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("[Video] No video file found after recording.");
+            if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
+            if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
+            SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: not found");
+        }
+    }
+
+    string FindNewestVideo()
+    {
+        string best = null;
+        long bestTime = _videoStartTimeMs - 5000; // Allow 5s tolerance before start
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+            using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
+
+            foreach (string dir in VideoDirs)
+            {
+                try
+                {
+                    using var file = new AndroidJavaObject("java.io.File", dir);
+                    if (!file.Call<bool>("exists") || !file.Call<bool>("isDirectory")) continue;
+
+                    var files = file.Call<AndroidJavaObject[]>("listFiles");
+                    if (files == null) continue;
+
+                    foreach (var f in files)
+                    {
+                        if (f == null) continue;
+                        string name = f.Call<string>("getName");
+                        if (name == null || !name.EndsWith(".mp4")) continue;
+
+                        long modified = f.Call<long>("lastModified");
+                        if (modified > bestTime)
+                        {
+                            bestTime = modified;
+                            best = f.Call<string>("getAbsolutePath");
+                        }
+                        f.Dispose();
+                    }
+                }
+                catch { }
+            }
+
+            // Also scan /sdcard recursively for any recent mp4
+            if (best == null)
+            {
+                Debug.Log("[Video] Scanning /sdcard for recent mp4 files...");
+                ScanDir("/sdcard", ref best, ref bestTime, 0);
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] FindNewestVideo error: {e.Message}");
+        }
+#endif
+
+        if (best != null)
+            Debug.Log($"[Video] Found newest video: {best} (modified: {bestTime})");
+
+        return best;
+    }
+
+    void ScanDir(string path, ref string best, ref long bestTime, int depth)
+    {
+        if (depth > 3) return; // Don't recurse too deep
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            using var dir = new AndroidJavaObject("java.io.File", path);
+            if (!dir.Call<bool>("exists") || !dir.Call<bool>("isDirectory")) return;
+
+            var files = dir.Call<AndroidJavaObject[]>("listFiles");
+            if (files == null) return;
+
+            foreach (var f in files)
+            {
+                if (f == null) continue;
+                string name = f.Call<string>("getName");
+                if (f.Call<bool>("isDirectory") && !name.StartsWith(".") && name != "Android")
+                {
+                    ScanDir(f.Call<string>("getAbsolutePath"), ref best, ref bestTime, depth + 1);
+                }
+                else if (name != null && name.EndsWith(".mp4"))
+                {
+                    long modified = f.Call<long>("lastModified");
+                    if (modified > bestTime)
+                    {
+                        bestTime = modified;
+                        best = f.Call<string>("getAbsolutePath");
+                    }
+                }
+                f.Dispose();
+            }
+        }
+        catch { }
+#endif
     }
 
     void SetIdle()
     {
-        SetStatus("Pull trigger to\nstart recording");
+        SetStatus("Press A or Trigger\nto start recording");
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
     }

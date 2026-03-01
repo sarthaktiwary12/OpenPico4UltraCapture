@@ -6,6 +6,7 @@ using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 public static class BuildAndroid
@@ -100,7 +101,7 @@ public static class BuildAndroid
         SetBool("handTracking", true);
         SetBool("bodyTracking", true);
         SetBool("spatialMesh", true);
-        SetBool("videoSeeThrough", false);
+        SetBool("videoSeeThrough", true);
         SetBool("openMRC", false);
 
         if (instance is UnityEngine.Object obj) EditorUtility.SetDirty(obj);
@@ -126,7 +127,7 @@ public static class BuildAndroid
         cameraGo.transform.SetParent(cameraOffsetGo.transform, false);
         var cam = cameraGo.AddComponent<Camera>();
         cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = new Color(0.1f, 0.1f, 0.3f, 1f);
+        cam.backgroundColor = new Color(0, 0, 0, 0); // Transparent for passthrough
         cameraGo.AddComponent<AudioListener>();
         cameraGo.AddComponent<PassthroughEnabler>();
         AddTrackedPoseDriver(cameraGo);
@@ -143,7 +144,8 @@ public static class BuildAndroid
 
         // ── PICO SDK objects ──
         var pxrManagerComp = AddPXRManager();
-        AddComponentByReflection("PXR_SpatialMeshManager", "PXR_SpatialMeshManager");
+        // NOTE: PXR_SpatialMeshManager removed — it throws NullRef in InitMeshColor()
+        // when materials aren't assigned. SpatialMeshCapture.cs handles mesh data independently.
 
         // ── System objects ──
         var imuGo = new GameObject("NativeIMUBridge");
@@ -165,21 +167,29 @@ public static class BuildAndroid
         var body = bodyGo.AddComponent<BodyTrackingRecorder>();
         body.sensorRecorder = sensor;
 
-        // ── Screen Space Overlay Canvas (2D panel mode) ──
+        // ── World Space Canvas (VR passthrough mode) ──
         var canvasGo = new GameObject("RecordingCanvas");
         var canvas = canvasGo.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        var scaler = canvasGo.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(506, 900);
-        scaler.matchWidthOrHeight = 0.5f;
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.worldCamera = cam;
         canvasGo.AddComponent<GraphicRaycaster>();
 
-        // Full-screen toggle button — pull trigger anywhere on the panel to toggle
+        // Position the canvas in front of the user at eye level
+        var canvasRt = canvasGo.GetComponent<RectTransform>();
+        canvasRt.sizeDelta = new Vector2(400, 300);
+        canvasGo.transform.position = new Vector3(0, 1.5f, 2f);
+        canvasGo.transform.localScale = Vector3.one * 0.002f; // ~0.8m wide in world
+
+        // EventSystem — required for Unity UI to receive any input
+        var eventSystemGo = new GameObject("EventSystem");
+        eventSystemGo.AddComponent<EventSystem>();
+        eventSystemGo.AddComponent<StandaloneInputModule>();
+
+        // Panel background
         var btnGo = new GameObject("BtnFullScreen");
         btnGo.transform.SetParent(canvasGo.transform, false);
         var btnImage = btnGo.AddComponent<Image>();
-        btnImage.color = new Color(0.1f, 0.3f, 0.1f, 1f);
+        btnImage.color = new Color(0.1f, 0.3f, 0.1f, 0.85f);
         var btnToggle = btnGo.AddComponent<Button>();
         btnToggle.targetGraphic = btnImage;
         var btnRt = btnGo.GetComponent<RectTransform>();
@@ -205,8 +215,9 @@ public static class BuildAndroid
         labelRt.offsetMax = Vector2.zero;
 
         // Status text below the label
-        var txtStatusGo = CreateUIText(btnGo.transform, "TxtStatus", "Pull trigger to\nstart recording",
-            Vector2.zero, Vector2.zero, 32);
+        var txtStatusGo = CreateUIText(btnGo.transform, "TxtStatus",
+            "Press A or Trigger\nto start recording",
+            Vector2.zero, Vector2.zero, 28);
         var txtStatus = txtStatusGo.GetComponent<Text>();
         var statusRt = txtStatusGo.GetComponent<RectTransform>();
         statusRt.anchorMin = new Vector2(0, 0.05f);
@@ -324,9 +335,17 @@ public static class BuildAndroid
         var initManagerOnStartProp = generalSettings?.GetType().GetProperty(
             "InitManagerOnStart",
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        initManagerOnStartProp?.SetValue(generalSettings, false);
+        initManagerOnStartProp?.SetValue(generalSettings, true);
 
-        // Keep AutomaticLoading/Running as-is from asset file (0 = 2D panel mode)
+        // Enable AutomaticLoading/Running for VR passthrough mode
+        var autoLoadProp = managerSettings?.GetType().GetProperty(
+            "automaticLoading",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        autoLoadProp?.SetValue(managerSettings, true);
+        var autoRunProp = managerSettings?.GetType().GetProperty(
+            "automaticRunning",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        autoRunProp?.SetValue(managerSettings, true);
 
         if (perBuildTarget is UnityEngine.Object perBuildObject)
         {

@@ -46,6 +46,8 @@ public class SensorRecorder : MonoBehaviour
         _elapsed = Time.realtimeSinceStartupAsDouble - _startRealtime;
         SampleHeadPose(); SampleHands(); SampleIMU();
         FrameIndex++;
+        // Flush every 60 frames to prevent data loss on crash/kill
+        if (FrameIndex % 60 == 0) { _headW?.Flush(); _handW?.Flush(); _imuW?.Flush(); }
     }
 
     void OnDestroy() { if (IsRecording) StopSession(); }

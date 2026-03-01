@@ -56,6 +56,7 @@ public class SpatialMeshCapture : MonoBehaviour
             for (int i = 0; i < tris.Count; i += 3) w.WriteLine($"3 {tris[i]} {tris[i+1]} {tris[i+2]}");
         }
         _idx.WriteLine($"{sensorRecorder.SessionElapsed:F6},{sensorRecorder.FrameIndex},{_n},{fn},{verts.Count},{tris.Count/3}");
+        _idx.Flush();
         _n++;
     }
 
