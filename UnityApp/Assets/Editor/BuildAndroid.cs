@@ -173,6 +173,9 @@ public static class BuildAndroid
         var body = bodyGo.AddComponent<BodyTrackingRecorder>();
         body.sensorRecorder = sensor;
 
+        var androidRecorderGo = new GameObject("AndroidScreenRecorder");
+        var androidRecorder = androidRecorderGo.AddComponent<AndroidScreenRecorder>();
+
         // ── World Space Canvas (VR passthrough mode) ──
         var canvasGo = new GameObject("RecordingCanvas");
         var canvas = canvasGo.AddComponent<Canvas>();
@@ -261,6 +264,7 @@ public static class BuildAndroid
         controller.syncManager = sync;
         controller.spatialMeshCapture = mesh;
         controller.bodyTrackingRecorder = body;
+        controller.androidScreenRecorder = androidRecorder;
         controller.btnToggle = btnToggle;
         controller.txtStatus = txtStatus;
         controller.txtButtonLabel = btnLabel;

@@ -18,6 +18,7 @@ public class SimpleRecordingController : MonoBehaviour
     public SyncManager syncManager;
     public SpatialMeshCapture spatialMeshCapture;
     public BodyTrackingRecorder bodyTrackingRecorder;
+    public AndroidScreenRecorder androidScreenRecorder;
 
     [Header("UI")]
     public Button btnToggle;
@@ -32,6 +33,7 @@ public class SimpleRecordingController : MonoBehaviour
     private long _videoStartTimeMs;
     private string _videoBackend = "none";
     private bool _enterpriseRecordingToggled;
+    private string _directVideoPath;
 
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
@@ -158,6 +160,7 @@ public class SimpleRecordingController : MonoBehaviour
 
             // Start POV video recording
             _videoStartTimeMs = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _directVideoPath = Path.Combine(_sessionDir, "pov_video.mp4");
             StartVideoRecording();
 
             _recording = true;
@@ -218,6 +221,13 @@ public class SimpleRecordingController : MonoBehaviour
     {
         _videoBackend = "none";
 
+        if (androidScreenRecorder != null && androidScreenRecorder.IsSupported && androidScreenRecorder.StartRecording(_directVideoPath))
+        {
+            _videoBackend = "android_projection";
+            sensorRecorder.LogAction("video_start", _videoBackend, "ok");
+            return;
+        }
+
         if (EnableEnterpriseRecorder && TryStartVideoEnterprise())
         {
             _videoBackend = "enterprise_record";
@@ -239,6 +249,11 @@ public class SimpleRecordingController : MonoBehaviour
     void StopVideoRecording()
     {
         bool stopped = false;
+
+        if (_videoBackend == "android_projection")
+        {
+            stopped = androidScreenRecorder != null && androidScreenRecorder.StopRecording();
+        }
 
         if (EnableEnterpriseRecorder && _videoBackend == "enterprise_record")
         {
@@ -407,6 +422,24 @@ public class SimpleRecordingController : MonoBehaviour
 
     IEnumerator FindAndCopyVideo(float dur, long frames)
     {
+        if (_videoBackend == "android_projection" && !string.IsNullOrEmpty(_directVideoPath))
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                if (File.Exists(_directVideoPath) && new FileInfo(_directVideoPath).Length > 0)
+                {
+                    sensorRecorder?.LogAction("video_saved", "pov_video.mp4", $"src={_directVideoPath}");
+                    sensorRecorder.StopSession();
+                    if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
+                    if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
+                    SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK");
+                    yield break;
+                }
+                yield return new WaitForSeconds(0.5f);
+            }
+            sensorRecorder?.LogAction("video_not_found", _videoBackend, "projection_output_missing");
+        }
+
         // Give the system recorder time to finalize and retry for up to ~20s.
         string videoPath = null;
         for (int attempt = 0; attempt < 5 && videoPath == null; attempt++)

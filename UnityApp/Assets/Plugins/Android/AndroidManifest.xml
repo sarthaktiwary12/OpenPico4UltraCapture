@@ -24,7 +24,7 @@
     <application
         android:requestLegacyExternalStorage="true">
         <activity
-            android:name="com.unity3d.player.UnityPlayerActivity"
+            android:name="com.sentientx.datacapture.CaptureUnityPlayerActivity"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
             android:hardwareAccelerated="true"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale|layoutDirection|density"
