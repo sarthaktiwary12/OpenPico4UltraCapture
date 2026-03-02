@@ -88,6 +88,15 @@ public class SpatialMeshCapture : MonoBehaviour
 #if PICO_XR
         if (_providerStartInFlight) yield break;
         _providerStartInFlight = true;
+
+        // Spatial mesh queries may validate against both anchor and scene providers.
+        var anchorStartTask = PXR_MixedReality.StartSenseDataProvider(PxrSenseDataProviderType.SpatialAnchor);
+        while (!anchorStartTask.IsCompleted) yield return null;
+        if (anchorStartTask.IsCompletedSuccessfully)
+        {
+            sensorRecorder?.LogAction("mesh_provider_start", "spatial_anchor", anchorStartTask.Result == PxrResult.SUCCESS ? "ok" : anchorStartTask.Result.ToString());
+        }
+
         PxrSenseDataProviderState state;
         var st = PXR_MixedReality.GetSenseDataProviderState(PxrSenseDataProviderType.SceneCapture, out state);
         if (st == PxrResult.SUCCESS && state == PxrSenseDataProviderState.Running)

@@ -105,6 +105,8 @@ public static class BuildAndroid
         SetBool("handTracking", true);
         SetBool("bodyTracking", true);
         SetBool("spatialMesh", true);
+        SetBool("spatialAnchor", true);
+        SetBool("sceneCapture", true);
         SetBool("videoSeeThrough", false);
         SetBool("openMRC", false);
 

@@ -324,16 +324,36 @@ public class SimpleRecordingController : MonoBehaviour
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
+            // Preferred path: send broadcast directly from app context.
+            using (var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using (var act = up.GetStatic<AndroidJavaObject>("currentActivity"))
+            using (var intent = new AndroidJavaObject("android.content.Intent", "com.pico.recorder.action.RECORD_CONTROL"))
+            {
+                if (act != null && intent != null)
+                {
+                    intent.Call<AndroidJavaObject>("putExtra", "command", "start");
+                    act.Call("sendBroadcast", intent);
+                    Debug.Log("[Video] App broadcast start sent.");
+                    return true;
+                }
+            }
+
             using var runtimeClass = new AndroidJavaClass("java.lang.Runtime");
             using var runtime = runtimeClass.CallStatic<AndroidJavaObject>("getRuntime");
-            using var proc = runtime?.Call<AndroidJavaObject>("exec", "am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command start");
-            int code = proc != null ? proc.Call<int>("waitFor") : -1;
-            if (code == 0)
+            if (runtime == null) return false;
+
+            // Use full binary path first; fallback to PATH lookup.
+            var cmd1 = new string[] { "/system/bin/am", "broadcast", "-a", "com.pico.recorder.action.RECORD_CONTROL", "--es", "command", "start" };
+            var cmd2 = new string[] { "am", "broadcast", "-a", "com.pico.recorder.action.RECORD_CONTROL", "--es", "command", "start" };
+
+            AndroidJavaObject proc = null;
+            try { proc = runtime.Call<AndroidJavaObject>("exec", cmd1); } catch { proc = runtime.Call<AndroidJavaObject>("exec", cmd2); }
+            if (proc != null)
             {
-                Debug.Log("[Video] Shell broadcast start command accepted.");
+                Debug.Log("[Video] Shell broadcast start command sent.");
                 return true;
             }
-            Debug.LogWarning($"[Video] Shell broadcast start exit code={code}.");
+            Debug.LogWarning("[Video] Shell broadcast start command not launched.");
         }
         catch (System.Exception e)
         {
@@ -348,16 +368,34 @@ public class SimpleRecordingController : MonoBehaviour
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
+            using (var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using (var act = up.GetStatic<AndroidJavaObject>("currentActivity"))
+            using (var intent = new AndroidJavaObject("android.content.Intent", "com.pico.recorder.action.RECORD_CONTROL"))
+            {
+                if (act != null && intent != null)
+                {
+                    intent.Call<AndroidJavaObject>("putExtra", "command", "stop");
+                    act.Call("sendBroadcast", intent);
+                    Debug.Log("[Video] App broadcast stop sent.");
+                    return true;
+                }
+            }
+
             using var runtimeClass = new AndroidJavaClass("java.lang.Runtime");
             using var runtime = runtimeClass.CallStatic<AndroidJavaObject>("getRuntime");
-            using var proc = runtime?.Call<AndroidJavaObject>("exec", "am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command stop");
-            int code = proc != null ? proc.Call<int>("waitFor") : -1;
-            if (code == 0)
+            if (runtime == null) return false;
+
+            var cmd1 = new string[] { "/system/bin/am", "broadcast", "-a", "com.pico.recorder.action.RECORD_CONTROL", "--es", "command", "stop" };
+            var cmd2 = new string[] { "am", "broadcast", "-a", "com.pico.recorder.action.RECORD_CONTROL", "--es", "command", "stop" };
+
+            AndroidJavaObject proc = null;
+            try { proc = runtime.Call<AndroidJavaObject>("exec", cmd1); } catch { proc = runtime.Call<AndroidJavaObject>("exec", cmd2); }
+            if (proc != null)
             {
-                Debug.Log("[Video] Shell broadcast stop command accepted.");
+                Debug.Log("[Video] Shell broadcast stop command sent.");
                 return true;
             }
-            Debug.LogWarning($"[Video] Shell broadcast stop exit code={code}.");
+            Debug.LogWarning("[Video] Shell broadcast stop command not launched.");
         }
         catch (System.Exception e)
         {
