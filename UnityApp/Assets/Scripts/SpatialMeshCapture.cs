@@ -5,30 +5,113 @@ using System.Threading.Tasks;
 using UnityEngine;
 #if PICO_XR
 using Unity.XR.PXR;
+#if PICO_OPENXR_SDK
+using Unity.XR.OpenXR.Features.PICOSupport;
+#endif
 #endif
 
 public class SpatialMeshCapture : MonoBehaviour
 {
+    private static SpatialMeshCapture _activeWriter;
     public float intervalS = 1f;
     public SensorRecorder sensorRecorder;
     private string _dir; private StreamWriter _idx; private float _last; private int _n; private bool _on;
+    private bool _ownsWriter;
     private bool _queryInFlight;
     private bool _loggedNoMesh;
+    private bool _providerReady;
+    private bool _providerStartInFlight;
+    private readonly List<PxrSpatialMeshInfo> _eventMeshes = new List<PxrSpatialMeshInfo>();
+    private bool _hasEventMeshes;
 
     public void StartCapture(string sessionDir)
     {
+        if (_activeWriter != null && _activeWriter != this)
+        {
+            Debug.LogWarning("[Mesh] Another SpatialMeshCapture instance is already active. This instance will stay idle.");
+            _ownsWriter = false;
+            _on = false;
+            return;
+        }
+        _activeWriter = this;
+        _ownsWriter = true;
+
         _dir = Path.Combine(sessionDir, "depth_mesh"); Directory.CreateDirectory(_dir);
         _idx = new StreamWriter(Path.Combine(_dir, "depth_mesh_index.csv"), false, new UTF8Encoding(false));
-        _idx.WriteLine("ts_s,frame,snapshot,filename,verts,tris"); _n = 0; _last = Time.realtimeSinceStartup; _on = true; _loggedNoMesh = false;
+        _idx.WriteLine("ts_s,frame,snapshot,filename,verts,tris");
+        _n = 0;
+        _last = Time.realtimeSinceStartup;
+        _on = true;
+        _loggedNoMesh = false;
+        _providerReady = false;
+        _providerStartInFlight = false;
+        _eventMeshes.Clear();
+        _hasEventMeshes = false;
+
+#if PICO_XR && PICO_OPENXR_SDK
+        OpenXRExtensions.SpatialMeshDataUpdated += OnSpatialMeshDataUpdated;
+#endif
+        StartCoroutine(EnsureProviderReady());
     }
 
-    public void StopCapture() { _on = false; _idx?.Flush(); _idx?.Close(); _idx = null; Debug.Log($"[Mesh] {_n} snapshots"); }
+    public void StopCapture()
+    {
+        _on = false;
+        if (_activeWriter == this) _activeWriter = null;
+#if PICO_XR && PICO_OPENXR_SDK
+        OpenXRExtensions.SpatialMeshDataUpdated -= OnSpatialMeshDataUpdated;
+#endif
+        _idx?.Flush(); _idx?.Close(); _idx = null; Debug.Log($"[Mesh] {_n} snapshots");
+    }
 
     void Update()
     {
-        if (!_on || sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        if (!_on || !_ownsWriter || sensorRecorder == null || !sensorRecorder.IsRecording) return;
         if (Time.realtimeSinceStartup - _last < intervalS) return; _last = Time.realtimeSinceStartup;
         if (!_queryInFlight) StartCoroutine(SnapRoutine());
+    }
+
+    void OnSpatialMeshDataUpdated(List<PxrSpatialMeshInfo> meshInfos)
+    {
+        if (!_on || meshInfos == null) return;
+        _eventMeshes.Clear();
+        _eventMeshes.AddRange(meshInfos);
+        _hasEventMeshes = _eventMeshes.Count > 0;
+    }
+
+    System.Collections.IEnumerator EnsureProviderReady()
+    {
+#if PICO_XR
+        if (_providerStartInFlight) yield break;
+        _providerStartInFlight = true;
+        PxrSenseDataProviderState state;
+        var st = PXR_MixedReality.GetSenseDataProviderState(PxrSenseDataProviderType.SceneCapture, out state);
+        if (st == PxrResult.SUCCESS && state == PxrSenseDataProviderState.Running)
+        {
+            _providerReady = true;
+            _providerStartInFlight = false;
+            yield break;
+        }
+
+        var startTask = PXR_MixedReality.StartSenseDataProvider(PxrSenseDataProviderType.SceneCapture);
+        while (!startTask.IsCompleted) yield return null;
+
+        if (startTask.IsCompletedSuccessfully && startTask.Result == PxrResult.SUCCESS)
+        {
+            _providerReady = true;
+            Debug.Log("[Mesh] Scene capture provider started.");
+            sensorRecorder?.LogAction("mesh_provider_start", "scene_capture", "ok");
+        }
+        else
+        {
+            _providerReady = false;
+            Debug.LogWarning($"[Mesh] Failed to start scene capture provider: {startTask.Status}");
+            sensorRecorder?.LogAction("mesh_provider_start", "scene_capture", "failed");
+        }
+        _providerStartInFlight = false;
+#else
+        yield break;
+#endif
     }
 
     System.Collections.IEnumerator SnapRoutine()
@@ -36,30 +119,43 @@ public class SpatialMeshCapture : MonoBehaviour
         _queryInFlight = true;
         bool wrote = false;
 #if PICO_XR
-        Task<(PxrResult result, List<PxrSpatialMeshInfo> meshInfos)> task = null;
-        try
+        if (!_providerReady && !_providerStartInFlight)
         {
-            task = PXR_MixedReality.QueryMeshAnchorAsync();
-        }
-        catch
-        {
-            task = null;
+            StartCoroutine(EnsureProviderReady());
         }
 
-        if (task != null)
+        if (_hasEventMeshes && _eventMeshes.Count > 0)
         {
-            float wait = 0f;
-            while (!task.IsCompleted && wait < 1.5f)
+            wrote = SnapFromPicoMeshInfos(_eventMeshes);
+        }
+
+        Task<(PxrResult result, List<PxrSpatialMeshInfo> meshInfos)> task = null;
+        if (!wrote)
+        {
+            try
             {
-                wait += Time.unscaledDeltaTime;
-                yield return null;
+                task = PXR_MixedReality.QueryMeshAnchorAsync();
+            }
+            catch
+            {
+                task = null;
             }
 
-            if (task.IsCompletedSuccessfully)
+            if (task != null)
             {
-                var result = task.Result;
-                if (result.result == PxrResult.SUCCESS && result.meshInfos != null && result.meshInfos.Count > 0)
-                    wrote = SnapFromPicoMeshInfos(result.meshInfos);
+                float wait = 0f;
+                while (!task.IsCompleted && wait < 1.5f)
+                {
+                    wait += Time.unscaledDeltaTime;
+                    yield return null;
+                }
+
+                if (task.IsCompletedSuccessfully)
+                {
+                    var result = task.Result;
+                    if (result.result == PxrResult.SUCCESS && result.meshInfos != null && result.meshInfos.Count > 0)
+                        wrote = SnapFromPicoMeshInfos(result.meshInfos);
+                }
             }
         }
 #endif
@@ -162,5 +258,5 @@ public class SpatialMeshCapture : MonoBehaviour
         _n++;
     }
 
-    void OnDestroy() { if (_on) StopCapture(); }
+    void OnDestroy() { if (_on) StopCapture(); if (_activeWriter == this) _activeWriter = null; }
 }
