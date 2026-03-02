@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.XR;
@@ -24,6 +26,8 @@ public class SimpleRecordingController : MonoBehaviour
     private bool _triggerWasDown;
     private string _sessionDir;
     private long _videoStartTimeMs;
+    private string _videoBackend = "none";
+    private bool _enterpriseRecordingToggled;
 
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
@@ -208,54 +212,152 @@ public class SimpleRecordingController : MonoBehaviour
 
     void StartVideoRecording()
     {
-        Debug.Log("[Video] Starting video recording via shell broadcast.");
-        sensorRecorder.LogAction("video_start", "shell_broadcast", "system_recording");
-        StartVideoShellFallback();
+        _videoBackend = "none";
+
+        if (TryStartVideoEnterprise())
+        {
+            _videoBackend = "enterprise_record";
+            sensorRecorder.LogAction("video_start", _videoBackend, "ok");
+            return;
+        }
+
+        if (TryStartVideoShellBroadcast())
+        {
+            _videoBackend = "shell_broadcast";
+            sensorRecorder.LogAction("video_start", _videoBackend, "ok");
+            return;
+        }
+
+        sensorRecorder.LogAction("video_start", "none", "failed");
+        Debug.LogWarning("[Video] Failed to start system recording with all backends.");
     }
 
     void StopVideoRecording()
     {
-        Debug.Log("[Video] Stopping video recording via shell broadcast.");
-        sensorRecorder.LogAction("video_stop", "shell_broadcast", "system_recording");
-        StopVideoShellFallback();
+        bool stopped = false;
+
+        if (_videoBackend == "enterprise_record")
+        {
+            stopped = TryStopVideoEnterprise();
+        }
+
+        if (!stopped && _videoBackend == "shell_broadcast")
+        {
+            stopped = TryStopVideoShellBroadcast();
+        }
+
+        if (!stopped)
+        {
+            // Last-chance stop attempts when start backend is unknown.
+            stopped = TryStopVideoEnterprise() || TryStopVideoShellBroadcast();
+        }
+
+        sensorRecorder.LogAction("video_stop", _videoBackend, stopped ? "ok" : "failed");
     }
 
-    void StartVideoShellFallback()
+    bool TryStartVideoEnterprise()
     {
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
-            using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
-            using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
-            using var runtimeClass = new AndroidJavaClass("java.lang.Runtime");
-            using var runtime = runtimeClass.CallStatic<AndroidJavaObject>("getRuntime");
-            runtime?.Call<AndroidJavaObject>("exec", "am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command start");
-            Debug.Log("[Video] Shell fallback: triggered system recording via broadcast.");
+            if (!InvokeEnterpriseRecordToggle()) return false;
+            _enterpriseRecordingToggled = true;
+            Debug.Log("[Video] Started recording with PXR_Enterprise.Record().");
+            return true;
         }
         catch (System.Exception e)
         {
-            Debug.LogWarning($"[Video] Shell fallback also failed: {e.Message}");
+            Debug.LogWarning($"[Video] Enterprise start failed: {e.Message}");
         }
 #endif
+        return false;
     }
 
-    void StopVideoShellFallback()
+    bool TryStopVideoEnterprise()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        if (!_enterpriseRecordingToggled) return false;
+        try
+        {
+            if (!InvokeEnterpriseRecordToggle()) return false;
+            _enterpriseRecordingToggled = false;
+            Debug.Log("[Video] Stopped recording with PXR_Enterprise.Record().");
+            return true;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] Enterprise stop failed: {e.Message}");
+        }
+#endif
+        return false;
+    }
+
+    static bool InvokeEnterpriseRecordToggle()
+    {
+        try
+        {
+            var t = System.AppDomain.CurrentDomain
+                .GetAssemblies()
+                .Select(a => a.GetType("Unity.XR.PXR.PXR_Enterprise"))
+                .FirstOrDefault(x => x != null);
+            if (t == null) return false;
+            var m = t.GetMethod("Record", BindingFlags.Public | BindingFlags.Static);
+            if (m == null) return false;
+            m.Invoke(null, null);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    bool TryStartVideoShellBroadcast()
     {
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
-            using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
-            using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
             using var runtimeClass = new AndroidJavaClass("java.lang.Runtime");
             using var runtime = runtimeClass.CallStatic<AndroidJavaObject>("getRuntime");
-            runtime?.Call<AndroidJavaObject>("exec", "am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command stop");
-            Debug.Log("[Video] Shell fallback: stopped system recording via broadcast.");
+            using var proc = runtime?.Call<AndroidJavaObject>("exec", "am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command start");
+            int code = proc != null ? proc.Call<int>("waitFor") : -1;
+            if (code == 0)
+            {
+                Debug.Log("[Video] Shell broadcast start command accepted.");
+                return true;
+            }
+            Debug.LogWarning($"[Video] Shell broadcast start exit code={code}.");
         }
         catch (System.Exception e)
         {
-            Debug.LogWarning($"[Video] Shell fallback stop failed: {e.Message}");
+            Debug.LogWarning($"[Video] Shell broadcast start failed: {e.Message}");
         }
 #endif
+        return false;
+    }
+
+    bool TryStopVideoShellBroadcast()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            using var runtimeClass = new AndroidJavaClass("java.lang.Runtime");
+            using var runtime = runtimeClass.CallStatic<AndroidJavaObject>("getRuntime");
+            using var proc = runtime?.Call<AndroidJavaObject>("exec", "am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command stop");
+            int code = proc != null ? proc.Call<int>("waitFor") : -1;
+            if (code == 0)
+            {
+                Debug.Log("[Video] Shell broadcast stop command accepted.");
+                return true;
+            }
+            Debug.LogWarning($"[Video] Shell broadcast stop exit code={code}.");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] Shell broadcast stop failed: {e.Message}");
+        }
+#endif
+        return false;
     }
 
     IEnumerator FindAndCopyVideo(float dur, long frames)
@@ -289,6 +391,7 @@ public class SimpleRecordingController : MonoBehaviour
         else
         {
             Debug.LogWarning("[Video] No video file found after recording.");
+            sensorRecorder?.LogAction("video_not_found", _videoBackend, "search_timeout");
             statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo: not found";
         }
 
