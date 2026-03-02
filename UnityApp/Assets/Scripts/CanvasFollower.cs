@@ -16,6 +16,9 @@ public class CanvasFollower : MonoBehaviour
     [Tooltip("Vertical offset from the camera (meters). Positive = above eye level.")]
     public float heightOffset = 0f;
 
+    [Tooltip("Horizontal offset from the camera in meters. Positive = right side.")]
+    public float rightOffset = 0f;
+
     [Tooltip("Angle (degrees) the user must turn before the canvas re-targets.")]
     public float reTargetAngle = 30f;
 
@@ -36,8 +39,12 @@ public class CanvasFollower : MonoBehaviour
         Vector3 flatFwd = new Vector3(camFwd.x, 0f, camFwd.z).normalized;
         if (flatFwd.sqrMagnitude < 0.001f)
             flatFwd = new Vector3(targetCamera.transform.right.x, 0f, targetCamera.transform.right.z).normalized;
+        Vector3 camRight = targetCamera.transform.right;
+        Vector3 flatRight = new Vector3(camRight.x, 0f, camRight.z).normalized;
+        if (flatRight.sqrMagnitude < 0.001f)
+            flatRight = Vector3.Cross(Vector3.up, flatFwd).normalized;
 
-        Vector3 desiredPos = camPos + flatFwd * followDistance + Vector3.up * heightOffset;
+        Vector3 desiredPos = camPos + flatFwd * followDistance + flatRight * rightOffset + Vector3.up * heightOffset;
         Quaternion desiredRot = Quaternion.LookRotation(flatFwd, Vector3.up);
 
         if (!_initialized)

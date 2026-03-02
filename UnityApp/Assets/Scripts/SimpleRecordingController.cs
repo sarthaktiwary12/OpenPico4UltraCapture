@@ -260,10 +260,14 @@ public class SimpleRecordingController : MonoBehaviour
 
     IEnumerator FindAndCopyVideo(float dur, long frames)
     {
-        // Give the system recorder time to finalize the file
-        yield return new WaitForSeconds(3f);
-
-        string videoPath = FindNewestVideo();
+        // Give the system recorder time to finalize and retry for up to ~20s.
+        string videoPath = null;
+        for (int attempt = 0; attempt < 5 && videoPath == null; attempt++)
+        {
+            yield return new WaitForSeconds(attempt == 0 ? 3f : 4f);
+            videoPath = FindNewestVideo();
+            Debug.Log($"[Video] Search attempt {attempt + 1}: {(videoPath ?? "none")}");
+        }
         string statusMsg;
 
         if (videoPath != null && _sessionDir != null)
@@ -323,6 +327,7 @@ public class SimpleRecordingController : MonoBehaviour
                         if (f == null) continue;
                         string name = f.Call<string>("getName");
                         if (name == null || !name.EndsWith(".mp4")) continue;
+                        if (name.ToLower().Contains("tmp")) continue;
 
                         long modified = f.Call<long>("lastModified");
                         if (modified > bestTime)
@@ -357,7 +362,7 @@ public class SimpleRecordingController : MonoBehaviour
 
     void ScanDir(string path, ref string best, ref long bestTime, int depth)
     {
-        if (depth > 3) return; // Don't recurse too deep
+        if (depth > 6) return;
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
@@ -371,7 +376,7 @@ public class SimpleRecordingController : MonoBehaviour
             {
                 if (f == null) continue;
                 string name = f.Call<string>("getName");
-                if (f.Call<bool>("isDirectory") && !name.StartsWith(".") && name != "Android")
+                if (f.Call<bool>("isDirectory") && !name.StartsWith("."))
                 {
                     ScanDir(f.Call<string>("getAbsolutePath"), ref best, ref bestTime, depth + 1);
                 }

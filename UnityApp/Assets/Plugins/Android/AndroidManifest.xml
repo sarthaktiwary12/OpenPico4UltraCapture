@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     package="com.sentientx.datacapture">
 
     <!-- Standard Android permissions -->
@@ -12,20 +13,26 @@
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
 
     <!-- PICO-specific permissions -->
+    <uses-permission android:name="com.picovr.permission.HAND_TRACKING" />
+    <uses-permission android:name="com.picovr.permission.BODY_TRACKING" />
+    <uses-permission android:name="com.picovr.permission.SPATIAL_DATA" />
     <uses-permission android:name="com.picoxr.permission.HAND_TRACKING" />
     <uses-permission android:name="com.picoxr.permission.BODY_TRACKING" />
     <uses-permission android:name="com.picoxr.permission.SPATIAL_DATA" />
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
 
     <application
         android:requestLegacyExternalStorage="true">
         <activity
             android:name="com.unity3d.player.UnityPlayerActivity"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:hardwareAccelerated="true"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale|layoutDirection|density"
             android:launchMode="singleTask"
             android:resizeableActivity="false"
             android:screenOrientation="landscape"
-            android:exported="true">
+            android:exported="true"
+            tools:replace="android:hardwareAccelerated,android:screenOrientation">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

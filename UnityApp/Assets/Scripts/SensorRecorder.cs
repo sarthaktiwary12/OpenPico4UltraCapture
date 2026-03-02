@@ -26,6 +26,7 @@ public class SensorRecorder : MonoBehaviour
     private StreamWriter _headW, _handW, _imuW, _actionW;
     private readonly StringBuilder _sb = new StringBuilder(512);
     private bool _nativeImu;
+    private bool _loggedImuFallback;
 
     static readonly string[] JN = {
         "Palm","Wrist","ThumbMeta","ThumbProx","ThumbDist","ThumbTip",
@@ -114,37 +115,79 @@ public class SensorRecorder : MonoBehaviour
 
     void SampleHand(string label)
     {
-#if PICO_XR
+        bool wroteAny = false;
+#if PICO_XR && !PICO_OPENXR_SDK
         try
         {
             var ht = label == "left" ? HandType.HandLeft : HandType.HandRight;
             var jl = new HandJointLocations();
-            if (!PXR_HandTracking.GetJointLocations(ht, ref jl) || jl.jointLocations == null) return;
-            int n = Mathf.Min(jl.jointLocations.Length, 26);
-            for (int i = 0; i < n; i++)
+            if (PXR_HandTracking.GetJointLocations(ht, ref jl) && jl.jointLocations != null)
             {
-                var j = jl.jointLocations[i];
-                if ((((ulong)j.locationStatus & (ulong)HandLocationStatus.PositionValid) == 0) &&
-                    (((ulong)j.locationStatus & (ulong)HandLocationStatus.OrientationValid) == 0)) continue;
-                var p = j.pose.Position.ToVector3();
-                var q = j.pose.Orientation.ToQuat();
-                string jn = i < JN.Length ? JN[i] : $"J{i}";
-                _handW.WriteLine($"{_elapsed:F6},{FrameIndex},{label},{i},{jn},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{j.radius:F4}");
+                int n = Mathf.Min(jl.jointLocations.Length, 26);
+                for (int i = 0; i < n; i++)
+                {
+                    var j = jl.jointLocations[i];
+                    if ((((ulong)j.locationStatus & (ulong)HandLocationStatus.PositionValid) == 0) &&
+                        (((ulong)j.locationStatus & (ulong)HandLocationStatus.OrientationValid) == 0)) continue;
+                    var p = j.pose.Position.ToVector3();
+                    var q = j.pose.Orientation.ToQuat();
+                    string jn = i < JN.Length ? JN[i] : $"J{i}";
+                    _handW.WriteLine($"{_elapsed:F6},{FrameIndex},{label},{i},{jn},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{j.radius:F4}");
+                    wroteAny = true;
+                }
             }
         }
         catch
         {
         }
 #endif
+        if (wroteAny) return;
+
+        // Fallback: record controller pose so hand_joints.csv is not silently empty.
+        var node = label == "left" ? XRNode.LeftHand : XRNode.RightHand;
+        var dev = InputDevices.GetDeviceAtXRNode(node);
+        if (!dev.isValid) return;
+        if (!dev.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 cp)) return;
+        if (!dev.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion cq)) return;
+        _handW.WriteLine($"{_elapsed:F6},{FrameIndex},{label},1,WristFallback,{cp.x:F6},{cp.y:F6},{cp.z:F6},{cq.x:F6},{cq.y:F6},{cq.z:F6},{cq.w:F6},0.0300");
     }
 
     void SampleIMU()
     {
         Vector3 a, g;
-        if (_nativeImu && NativeIMUBridge.Instance.IsActive)
-        { a = NativeIMUBridge.Instance.Acceleration; g = NativeIMUBridge.Instance.AngularVelocity; }
-        else { a = Input.gyro.enabled ? Input.gyro.userAcceleration : Input.acceleration; g = Input.gyro.enabled ? Input.gyro.rotationRateUnbiased : Vector3.zero; }
+        var native = NativeIMUBridge.Instance;
+        bool useNative = _nativeImu && native != null && native.IsActive && native.HasFreshData;
+        if (useNative)
+        {
+            a = native.Acceleration;
+            g = native.AngularVelocity;
+        }
+        else if (TryGetHeadKinematics(out a, out g))
+        {
+            if (!_loggedImuFallback)
+            {
+                LogAction("imu_fallback", "xr_head_kinematics", "native_or_gyro_unavailable");
+                _loggedImuFallback = true;
+            }
+        }
+        else
+        {
+            a = Input.gyro.enabled ? Input.gyro.userAcceleration : Input.acceleration;
+            g = Input.gyro.enabled ? Input.gyro.rotationRateUnbiased : Vector3.zero;
+        }
         _imuW.WriteLine($"{_elapsed:F6},{FrameIndex},{a.x:F6},{a.y:F6},{a.z:F6},{g.x:F6},{g.y:F6},{g.z:F6}");
+    }
+
+    bool TryGetHeadKinematics(out Vector3 accel, out Vector3 gyro)
+    {
+        accel = Vector3.zero;
+        gyro = Vector3.zero;
+        var hmd = InputDevices.GetDeviceAtXRNode(XRNode.Head);
+        bool hasA = hmd.isValid && hmd.TryGetFeatureValue(CommonUsages.deviceAcceleration, out accel);
+        bool hasG = hmd.isValid && hmd.TryGetFeatureValue(CommonUsages.deviceAngularVelocity, out gyro);
+        if (!hasA) accel = Vector3.zero;
+        if (!hasG) gyro = Vector3.zero;
+        return hasA || hasG;
     }
 
     // ── Calibration ──

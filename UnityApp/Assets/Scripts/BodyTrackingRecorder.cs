@@ -11,6 +11,7 @@ public class BodyTrackingRecorder : MonoBehaviour
     private StreamWriter _w;
     private bool _on;
     private bool _available;
+    private float _nextProbeTime;
 
     // Matches BodyTrackerRole enum order (0–23)
     static readonly string[] BodyJointNames = {
@@ -31,6 +32,7 @@ public class BodyTrackingRecorder : MonoBehaviour
         _w = new StreamWriter(path, false, new UTF8Encoding(false), 65536);
         _w.WriteLine("ts_s,frame,joint_id,joint_name,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,confidence");
         _available = CheckAvailability();
+        _nextProbeTime = Time.realtimeSinceStartup + 2f;
         _on = true;
         if (!_available) Debug.LogWarning("[Body] Body tracking not available — body_pose.csv will be empty.");
     }
@@ -49,7 +51,14 @@ public class BodyTrackingRecorder : MonoBehaviour
 
     void Update()
     {
-        if (!_on || !_available || sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        if (!_on || sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        if (!_available && Time.realtimeSinceStartup >= _nextProbeTime)
+        {
+            _available = CheckAvailability();
+            _nextProbeTime = Time.realtimeSinceStartup + 2f;
+            if (_available) Debug.Log("[Body] Body tracking became available during recording.");
+        }
+        if (!_available) return;
         SampleBody();
         _frameCount++;
         if (_frameCount % 60 == 0) _w?.Flush();

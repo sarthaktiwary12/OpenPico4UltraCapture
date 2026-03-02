@@ -52,7 +52,7 @@ public class SyncManager : MonoBehaviour
     bool GetPalm(string side, out Vector3 pos)
     {
         pos = Vector3.zero;
-#if PICO_XR
+#if PICO_XR && !PICO_OPENXR_SDK
         try
         {
             var ht = side == "left" ? HandType.HandLeft : HandType.HandRight;

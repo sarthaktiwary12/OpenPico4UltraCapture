@@ -1,11 +1,12 @@
 using System.Collections;
+using System.Reflection;
 using UnityEngine;
-#if PICO_XR
-using Unity.XR.PXR;
-#endif
+using UnityEngine.XR;
 
 public class PassthroughEnabler : MonoBehaviour
 {
+    private bool _enabled;
+
     void Start()
     {
         var cam = GetComponent<Camera>();
@@ -15,42 +16,51 @@ public class PassthroughEnabler : MonoBehaviour
             cam.backgroundColor = new Color(0, 0, 0, 0);
         }
 
-#if PICO_XR
-        StartCoroutine(EnablePassthrough());
-#else
-        Debug.Log("[Passthrough] Camera configured (editor mode).");
-#endif
+        StartCoroutine(EnablePassthroughOnceWhenXRReady());
     }
 
-#if PICO_XR
-    IEnumerator EnablePassthrough()
+    private IEnumerator EnablePassthroughOnceWhenXRReady()
     {
-        // Wait a frame for XR to fully initialize
-        yield return null;
-
-        // Disable guardian system to prevent seethrough settings dialog from popping up
-        try
+        // Avoid repeated toggles that can trigger runtime tracking restarts.
+        const float timeoutSeconds = 8f;
+        float waited = 0f;
+        while (!XRSettings.isDeviceActive && waited < timeoutSeconds)
         {
-            PXR_Boundary.SetGuardianSystemDisable(true);
-            Debug.Log("[Passthrough] Guardian system disabled.");
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Passthrough] SetGuardianSystemDisable failed: {e.Message}");
+            waited += 0.25f;
+            yield return new WaitForSeconds(0.25f);
         }
 
-        yield return null;
-
-        // Enable passthrough
-        PXR_Manager.EnableVideoSeeThrough = true;
-        Debug.Log("[Passthrough] PICO passthrough enabled.");
+        yield return new WaitForSeconds(0.25f);
+        TryEnableOpenXRPassthrough();
     }
-#endif
 
-    void OnDestroy()
+    private void TryEnableOpenXRPassthrough()
     {
-#if PICO_XR
-        PXR_Manager.EnableVideoSeeThrough = false;
-#endif
+        if (_enabled)
+            return;
+
+        string[] typeNames =
+        {
+            "Unity.XR.OpenXR.Features.PICOSupport.PassthroughFeature, Unity.XR.PICO",
+            "Unity.XR.OpenXR.Features.PICOSupport.PassthroughFeature, Unity.XR.PICO.OpenXR"
+        };
+
+        foreach (var name in typeNames)
+        {
+            var passthroughType = System.Type.GetType(name);
+            if (passthroughType == null)
+                continue;
+
+            var prop = passthroughType.GetProperty("EnableVideoSeeThrough", BindingFlags.Public | BindingFlags.Static);
+            if (prop == null)
+                continue;
+
+            prop.SetValue(null, true, null);
+            _enabled = true;
+            Debug.Log($"[Passthrough] Enabled via {name}");
+            return;
+        }
+
+        Debug.LogWarning("[Passthrough] OpenXR passthrough feature not found.");
     }
 }

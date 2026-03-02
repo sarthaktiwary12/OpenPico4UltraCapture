@@ -34,12 +34,32 @@ public class SpatialMeshCapture : MonoBehaviour
         foreach (var mf in FindObjectsByType<MeshFilter>(FindObjectsSortMode.None))
         {
             if (mf.sharedMesh == null) continue;
-            string nm = mf.gameObject.name.ToLower();
-            bool isSpatial = nm.Contains("spatial") || nm.Contains("mesh");
+            if (mf.GetComponentInParent<Canvas>() != null) continue;
+            string nm = mf.gameObject.name.ToLowerInvariant();
+            bool isSpatial = nm.Contains("spatial") || nm.Contains("scene") || nm.Contains("mesh") || nm.Contains("mr");
 #if PICO_XR
             isSpatial |= mf.GetComponentInParent<PXR_SpatialMeshManager>() != null;
 #endif
-            if (mf.transform.parent != null) { string pn = mf.transform.parent.name.ToLower(); isSpatial |= pn.Contains("spatial") || pn.Contains("mesh"); }
+            if (mf.transform.parent != null)
+            {
+                string pn = mf.transform.parent.name.ToLowerInvariant();
+                isSpatial |= pn.Contains("spatial") || pn.Contains("scene") || pn.Contains("mesh") || pn.Contains("mr");
+            }
+            if (!isSpatial)
+            {
+                var comps = mf.GetComponents<Component>();
+                for (int i = 0; i < comps.Length; i++)
+                {
+                    var c = comps[i];
+                    if (c == null) continue;
+                    string tn = c.GetType().Name.ToLowerInvariant();
+                    if (tn.Contains("spatial") || tn.Contains("scene") || tn.Contains("mesh") || tn.Contains("mr"))
+                    {
+                        isSpatial = true;
+                        break;
+                    }
+                }
+            }
             if (!isSpatial) continue;
             int off = verts.Count; var m = mf.sharedMesh; var t = mf.transform;
             foreach (var v in m.vertices) verts.Add(t.TransformPoint(v));

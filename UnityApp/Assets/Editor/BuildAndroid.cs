@@ -26,19 +26,23 @@ public static class BuildAndroid
 
         EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Android, BuildTarget.Android);
         EnableDefineSymbol("PICO_XR");
+        EnableDefineSymbol("PICO_OPENXR_SDK");
         EnsurePicoLoaderConfigured();
         EnsureOpenXRSettingsLoaded();
+        EnsurePicoOpenXRFeatureSetEnabled();
         EnsurePicoPlatformAppIdConfigured();
 
         PlayerSettings.companyName = "SentientX";
         PlayerSettings.productName = "OpenPico4UltraCapture";
         PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, "com.sentientx.datacapture");
         PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel29;
+        PlayerSettings.Android.targetSdkVersion = AndroidSdkVersions.AndroidApiLevelAuto;
+        PlayerSettings.colorSpace = ColorSpace.Linear;
 #if UNITY_2023_1_OR_NEWER
         PlayerSettings.Android.applicationEntry = AndroidApplicationEntry.Activity;
 #endif
         PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
-        PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { UnityEngine.Rendering.GraphicsDeviceType.OpenGLES3 });
+        PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { UnityEngine.Rendering.GraphicsDeviceType.Vulkan });
         PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
         PlayerSettings.SetScriptingBackend(BuildTargetGroup.Android, ScriptingImplementation.IL2CPP);
 
@@ -101,7 +105,7 @@ public static class BuildAndroid
         SetBool("handTracking", true);
         SetBool("bodyTracking", true);
         SetBool("spatialMesh", true);
-        SetBool("videoSeeThrough", true);
+        SetBool("videoSeeThrough", false);
         SetBool("openMRC", false);
 
         if (instance is UnityEngine.Object obj) EditorUtility.SetDirty(obj);
@@ -177,58 +181,76 @@ public static class BuildAndroid
         // Head-following behaviour so the canvas stays visible after turning
         var follower = canvasGo.AddComponent<CanvasFollower>();
         follower.targetCamera = cam;
+        follower.followDistance = 1.1f;
+        follower.heightOffset = 0.10f;
+        follower.rightOffset = 0.40f;
+        follower.reTargetAngle = 45f;
+        follower.followSpeed = 5f;
 
-        // Position the canvas in front of the user at eye level
+        // Place a compact HUD in the upper-right peripheral view.
         var canvasRt = canvasGo.GetComponent<RectTransform>();
-        canvasRt.sizeDelta = new Vector2(400, 300);
-        canvasGo.transform.position = new Vector3(0, 1.5f, 2f);
-        canvasGo.transform.localScale = Vector3.one * 0.002f; // ~0.8m wide in world
+        canvasRt.sizeDelta = new Vector2(420, 200);
+        canvasGo.transform.position = new Vector3(0, 1.6f, 1.5f);
+        canvasGo.transform.localScale = Vector3.one * 0.0015f; // ~0.63m wide in world
 
         // EventSystem — required for Unity UI to receive any input
         var eventSystemGo = new GameObject("EventSystem");
         eventSystemGo.AddComponent<EventSystem>();
         eventSystemGo.AddComponent<StandaloneInputModule>();
 
-        // Panel background
-        var btnGo = new GameObject("BtnFullScreen");
+        // Runtime Android permission requests for camera/mic/sensors/media access.
+        var runtimePermissionsGo = new GameObject("RuntimePermissions");
+        runtimePermissionsGo.AddComponent<RuntimePermissions>();
+
+        // Recovery path in case XR subsystem does not auto-start on device.
+        var xrBootstrapFixGo = new GameObject("XRBootstrapFix");
+        xrBootstrapFixGo.AddComponent<XRBootstrapFix>();
+        var xrDescriptorDumpGo = new GameObject("XRDescriptorDump");
+        xrDescriptorDumpGo.AddComponent<XRDescriptorDump>();
+
+        // Compact recording button in the corner (non-blocking UI).
+        var btnGo = new GameObject("BtnToggle");
         btnGo.transform.SetParent(canvasGo.transform, false);
         var btnImage = btnGo.AddComponent<Image>();
-        btnImage.color = new Color(0.1f, 0.3f, 0.1f, 0.85f);
+        btnImage.color = new Color(0.1f, 0.45f, 0.15f, 0.82f);
         var btnToggle = btnGo.AddComponent<Button>();
         btnToggle.targetGraphic = btnImage;
         var btnRt = btnGo.GetComponent<RectTransform>();
-        btnRt.anchorMin = Vector2.zero;
-        btnRt.anchorMax = Vector2.one;
-        btnRt.offsetMin = Vector2.zero;
-        btnRt.offsetMax = Vector2.zero;
+        btnRt.anchorMin = new Vector2(1f, 1f);
+        btnRt.anchorMax = new Vector2(1f, 1f);
+        btnRt.pivot = new Vector2(1f, 1f);
+        btnRt.sizeDelta = new Vector2(220f, 86f);
+        btnRt.anchoredPosition = new Vector2(-12f, -10f);
 
         // Big label text (RECORD / STOP)
         var labelGo = new GameObject("Label");
         labelGo.transform.SetParent(btnGo.transform, false);
         var btnLabel = labelGo.AddComponent<Text>();
         btnLabel.text = "RECORD";
-        btnLabel.fontSize = 64;
+        btnLabel.fontSize = 38;
         btnLabel.fontStyle = FontStyle.Bold;
         btnLabel.alignment = TextAnchor.MiddleCenter;
         btnLabel.color = Color.white;
         btnLabel.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         var labelRt = labelGo.GetComponent<RectTransform>();
-        labelRt.anchorMin = new Vector2(0, 0.3f);
-        labelRt.anchorMax = new Vector2(1, 0.7f);
+        labelRt.anchorMin = Vector2.zero;
+        labelRt.anchorMax = Vector2.one;
         labelRt.offsetMin = Vector2.zero;
         labelRt.offsetMax = Vector2.zero;
 
-        // Status text below the label
+        // Status text below the button.
         var txtStatusGo = CreateUIText(btnGo.transform, "TxtStatus",
             "Press A or Trigger\nto start recording",
             Vector2.zero, Vector2.zero, 28);
         var txtStatus = txtStatusGo.GetComponent<Text>();
+        txtStatus.alignment = TextAnchor.UpperRight;
         var statusRt = txtStatusGo.GetComponent<RectTransform>();
-        statusRt.anchorMin = new Vector2(0, 0.05f);
-        statusRt.anchorMax = new Vector2(1, 0.35f);
-        statusRt.offsetMin = new Vector2(20, 0);
-        statusRt.offsetMax = new Vector2(-20, 0);
-        statusRt.anchoredPosition = Vector2.zero;
+        statusRt.SetParent(canvasGo.transform, false);
+        statusRt.anchorMin = new Vector2(1f, 1f);
+        statusRt.anchorMax = new Vector2(1f, 1f);
+        statusRt.pivot = new Vector2(1f, 1f);
+        statusRt.sizeDelta = new Vector2(360f, 100f);
+        statusRt.anchoredPosition = new Vector2(-12f, -102f);
 
         // ── SimpleRecordingController ──
         var controllerGo = new GameObject("SimpleRecordingController");
@@ -257,6 +279,17 @@ public static class BuildAndroid
         }
     }
 
+    private static void DisableDefineSymbol(string symbol)
+    {
+        var target = BuildTargetGroup.Android;
+        var existing = PlayerSettings.GetScriptingDefineSymbolsForGroup(target);
+        var symbols = existing.Split(';', StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (symbols.RemoveAll(s => s == symbol) > 0)
+        {
+            PlayerSettings.SetScriptingDefineSymbolsForGroup(target, string.Join(";", symbols));
+        }
+    }
+
     private static void EnsureOpenXRSettingsLoaded()
     {
         var openXrSettingsType = AppDomain.CurrentDomain
@@ -276,6 +309,49 @@ public static class BuildAndroid
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
         getSettingsForBuildTargetGroup?.Invoke(instance, new object[] { BuildTargetGroup.Android });
         AssetDatabase.SaveAssets();
+    }
+
+    private static void EnsurePicoOpenXRFeatureSetEnabled()
+    {
+        var featureSetMgrType = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .SelectMany(SafeGetTypes)
+            .FirstOrDefault(t => t.FullName == "UnityEditor.XR.OpenXR.Features.OpenXRFeatureSetManager");
+        if (featureSetMgrType == null) return;
+
+        var initializeFeatureSets = featureSetMgrType.GetMethod(
+            "InitializeFeatureSets",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+            null,
+            Type.EmptyTypes,
+            null);
+        initializeFeatureSets?.Invoke(null, null);
+
+        var getFeatureSetWithId = featureSetMgrType.GetMethod(
+            "GetFeatureSetWithId",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        var setFeaturesFromEnabledFeatureSets = featureSetMgrType.GetMethod(
+            "SetFeaturesFromEnabledFeatureSets",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+            null,
+            new[] { typeof(BuildTargetGroup) },
+            null);
+
+        var picoSet = getFeatureSetWithId?.Invoke(null, new object[] { BuildTargetGroup.Android, "com.picoxr.openxr.features" });
+        if (picoSet != null)
+        {
+            var enabledField = picoSet.GetType().GetField(
+                "isEnabled",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            enabledField?.SetValue(picoSet, true);
+            setFeaturesFromEnabledFeatureSets?.Invoke(null, new object[] { BuildTargetGroup.Android });
+            AssetDatabase.SaveAssets();
+            Debug.Log("[Build] Enabled OpenXR feature set: com.picoxr.openxr.features");
+        }
+        else
+        {
+            Debug.LogWarning("[Build] PICO OpenXR feature set not found. Passthrough may remain unavailable.");
+        }
     }
 
     private static void EnsurePicoLoaderConfigured()
@@ -333,7 +409,11 @@ public static class BuildAndroid
         var assignLoader = metadataStoreType.GetMethod(
             "AssignLoader",
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-        assignLoader?.Invoke(null, new[] { managerSettings, "Unity.XR.PXR.PXR_Loader", (object)BuildTargetGroup.Android });
+        var removeLoader = metadataStoreType.GetMethod(
+            "RemoveLoader",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        removeLoader?.Invoke(null, new[] { managerSettings, "Unity.XR.PXR.PXR_Loader", (object)BuildTargetGroup.Android });
+        assignLoader?.Invoke(null, new[] { managerSettings, "UnityEngine.XR.OpenXR.OpenXRLoader", (object)BuildTargetGroup.Android });
 
         var generalSettings = settingsForBuildTarget?.Invoke(perBuildTarget, androidTarget);
         var initManagerOnStartProp = generalSettings?.GetType().GetProperty(
@@ -486,7 +566,7 @@ public static class BuildAndroid
         SetBool("handTracking", true);
         SetBool("bodyTracking", true);
         SetBool("spatialMesh", true);
-        SetBool("videoSeeThrough", true);
+        SetBool("videoSeeThrough", false);
 
         return component;
     }
