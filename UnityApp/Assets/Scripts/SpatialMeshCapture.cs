@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.XR;
 #if PICO_XR
 using Unity.XR.PXR;
 #if PICO_OPENXR_SDK
@@ -25,6 +26,10 @@ public class SpatialMeshCapture : MonoBehaviour
     private int _lastLoggedQueryCode = int.MinValue;
     private readonly List<PxrSpatialMeshInfo> _eventMeshes = new List<PxrSpatialMeshInfo>();
     private bool _hasEventMeshes;
+    private XRMeshSubsystem _xrMeshSubsystem;
+    private bool _xrMeshInitTried;
+    private readonly List<MeshInfo> _xrMeshInfos = new List<MeshInfo>();
+    private readonly Dictionary<MeshId, Mesh> _xrMeshCache = new Dictionary<MeshId, Mesh>();
 
     public void StartCapture(string sessionDir)
     {
@@ -51,10 +56,14 @@ public class SpatialMeshCapture : MonoBehaviour
         _lastLoggedQueryCode = int.MinValue;
         _eventMeshes.Clear();
         _hasEventMeshes = false;
+        _xrMeshInitTried = false;
+        _xrMeshInfos.Clear();
+        _xrMeshCache.Clear();
 
 #if PICO_XR && PICO_OPENXR_SDK
         OpenXRExtensions.SpatialMeshDataUpdated += OnSpatialMeshDataUpdated;
 #endif
+        EnsureXRMeshSubsystem();
         StartCoroutine(EnsureProviderReady());
     }
 
@@ -65,6 +74,8 @@ public class SpatialMeshCapture : MonoBehaviour
 #if PICO_XR && PICO_OPENXR_SDK
         OpenXRExtensions.SpatialMeshDataUpdated -= OnSpatialMeshDataUpdated;
 #endif
+        foreach (var kv in _xrMeshCache) Destroy(kv.Value);
+        _xrMeshCache.Clear();
         _idx?.Flush(); _idx?.Close(); _idx = null; Debug.Log($"[Mesh] {_n} snapshots");
     }
 
@@ -130,7 +141,7 @@ public class SpatialMeshCapture : MonoBehaviour
     System.Collections.IEnumerator SnapRoutine()
     {
         _queryInFlight = true;
-        bool wrote = false;
+        bool wrote = SnapFromXRMeshSubsystem();
 #if PICO_XR
         if (!_providerReady)
         {
@@ -198,6 +209,75 @@ public class SpatialMeshCapture : MonoBehaviour
         }
 
         _queryInFlight = false;
+    }
+
+    void EnsureXRMeshSubsystem()
+    {
+        if (_xrMeshSubsystem != null) return;
+        if (_xrMeshInitTried) return;
+        _xrMeshInitTried = true;
+
+        var subsystems = new List<XRMeshSubsystem>();
+        SubsystemManager.GetSubsystems(subsystems);
+        for (int i = 0; i < subsystems.Count; i++)
+        {
+            if (subsystems[i] == null) continue;
+            _xrMeshSubsystem = subsystems[i];
+            if (!_xrMeshSubsystem.running) _xrMeshSubsystem.Start();
+            break;
+        }
+
+        if (_xrMeshSubsystem != null)
+            sensorRecorder?.LogAction("mesh_provider_start", "xr_mesh_subsystem", "ok");
+        else
+            sensorRecorder?.LogAction("mesh_provider_start", "xr_mesh_subsystem", "missing");
+    }
+
+    bool SnapFromXRMeshSubsystem()
+    {
+        EnsureXRMeshSubsystem();
+        if (_xrMeshSubsystem == null || !_xrMeshSubsystem.running) return false;
+        if (!_xrMeshSubsystem.TryGetMeshInfos(_xrMeshInfos) || _xrMeshInfos.Count == 0) return false;
+
+        for (int i = 0; i < _xrMeshInfos.Count; i++)
+        {
+            var info = _xrMeshInfos[i];
+            bool needsUpdate = info.ChangeState == UnityEngine.XR.MeshChangeState.Added ||
+                               info.ChangeState == UnityEngine.XR.MeshChangeState.Updated ||
+                               !_xrMeshCache.ContainsKey(info.MeshId);
+            if (!needsUpdate) continue;
+
+            var generated = new Mesh();
+            _xrMeshSubsystem.GenerateMeshAsync(
+                info.MeshId,
+                generated,
+                null,
+                MeshVertexAttributes.Normals,
+                result =>
+                {
+                    if (result.Status != MeshGenerationStatus.Success || result.Mesh == null) return;
+                    if (_xrMeshCache.TryGetValue(result.MeshId, out var oldMesh) && oldMesh != null) Destroy(oldMesh);
+                    _xrMeshCache[result.MeshId] = result.Mesh;
+                });
+        }
+
+        var verts = new List<Vector3>();
+        var tris = new List<int>();
+        foreach (var kv in _xrMeshCache)
+        {
+            var mesh = kv.Value;
+            if (mesh == null || mesh.vertexCount == 0) continue;
+
+            int off = verts.Count;
+            var mVerts = mesh.vertices;
+            for (int i = 0; i < mVerts.Length; i++) verts.Add(mVerts[i]);
+            var mTris = mesh.triangles;
+            for (int i = 0; i < mTris.Length; i++) tris.Add(mTris[i] + off);
+        }
+
+        if (verts.Count == 0 || tris.Count < 3) return false;
+        WriteSnapshot(verts, tris);
+        return true;
     }
 
     bool SnapFromPicoMeshInfos(List<PxrSpatialMeshInfo> meshInfos)
