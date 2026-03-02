@@ -174,6 +174,10 @@ public static class BuildAndroid
         canvas.worldCamera = cam;
         canvasGo.AddComponent<GraphicRaycaster>();
 
+        // Head-following behaviour so the canvas stays visible after turning
+        var follower = canvasGo.AddComponent<CanvasFollower>();
+        follower.targetCamera = cam;
+
         // Position the canvas in front of the user at eye level
         var canvasRt = canvasGo.GetComponent<RectTransform>();
         canvasRt.sizeDelta = new Vector2(400, 300);
@@ -470,21 +474,19 @@ public static class BuildAndroid
         var go = new GameObject("PXR_Manager");
         var component = go.AddComponent(type);
 
-        // Disable MRC by default
-        var openMrcField = type.GetField("openMRC",
-            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        openMrcField?.SetValue(component, false);
-
-        // Enable body tracking
-        var bodyTrackingField = type.GetField("bodyTracking",
-            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (bodyTrackingField != null)
-        {
-            if (bodyTrackingField.FieldType == typeof(bool))
-                bodyTrackingField.SetValue(component, true);
-            else if (bodyTrackingField.FieldType == typeof(int))
-                bodyTrackingField.SetValue(component, 1);
+        void SetBool(string name, bool val) {
+            var f = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (f != null) {
+                if (f.FieldType == typeof(bool)) f.SetValue(component, val);
+                else if (f.FieldType == typeof(int)) f.SetValue(component, val ? 1 : 0);
+            }
         }
+
+        SetBool("openMRC", false);
+        SetBool("handTracking", true);
+        SetBool("bodyTracking", true);
+        SetBool("spatialMesh", true);
+        SetBool("videoSeeThrough", true);
 
         return component;
     }

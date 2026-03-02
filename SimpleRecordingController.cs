@@ -4,9 +4,6 @@ using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.XR;
-#if PICO_XR
-using Unity.XR.PICO.TOBSupport;
-#endif
 
 public class SimpleRecordingController : MonoBehaviour
 {
@@ -43,6 +40,34 @@ public class SimpleRecordingController : MonoBehaviour
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
         SetIdle();
         Debug.Log("[Controller] Ready. Press A or Trigger to toggle recording.");
+        StartCoroutine(LogDiagnostics());
+    }
+
+    System.Collections.IEnumerator LogDiagnostics()
+    {
+        yield return new WaitForSeconds(2f);
+        var xrDisplay = UnityEngine.XR.XRSettings.isDeviceActive;
+        var xrModel = UnityEngine.XR.XRSettings.loadedDeviceName;
+        Debug.Log($"[Diag] XR active={xrDisplay}, device={xrModel}, Screen={Screen.width}x{Screen.height}");
+        Debug.Log($"[Diag] sensorRecorder={sensorRecorder != null}, spatialMesh={spatialMeshCapture != null}, bodyTracker={bodyTrackingRecorder != null}");
+
+        var devices = new System.Collections.Generic.List<UnityEngine.XR.InputDevice>();
+        UnityEngine.XR.InputDevices.GetDevices(devices);
+        Debug.Log($"[Diag] XR devices found: {devices.Count}");
+        foreach (var d in devices)
+            Debug.Log($"[Diag]   device: {d.name} ({d.characteristics})");
+
+        var hmd = UnityEngine.XR.InputDevices.GetDeviceAtXRNode(UnityEngine.XR.XRNode.Head);
+        Debug.Log($"[Diag] HMD valid={hmd.isValid}");
+        if (hmd.isValid)
+        {
+            hmd.TryGetFeatureValue(UnityEngine.XR.CommonUsages.devicePosition, out Vector3 p);
+            hmd.TryGetFeatureValue(UnityEngine.XR.CommonUsages.deviceRotation, out Quaternion r);
+            Debug.Log($"[Diag] HMD pos=({p.x:F2},{p.y:F2},{p.z:F2}) rot=({r.x:F2},{r.y:F2},{r.z:F2},{r.w:F2})");
+        }
+
+        var nativeImu = NativeIMUBridge.Instance;
+        Debug.Log($"[Diag] NativeIMU active={nativeImu?.IsActive}, accel={nativeImu?.Acceleration}");
     }
 
     void Update()
@@ -154,7 +179,9 @@ public class SimpleRecordingController : MonoBehaviour
 
             bodyTrackingRecorder?.StopCapture();
             spatialMeshCapture?.StopCapture();
-            sensorRecorder.StopSession();
+
+            // NOTE: StopSession is deferred to end of FindAndCopyVideo so that
+            // LogAction("video_saved") can still write to the action log.
 
             float dur = Time.time - _startTime;
             long frames = sensorRecorder.FrameIndex;
@@ -174,46 +201,23 @@ public class SimpleRecordingController : MonoBehaviour
         {
             Debug.LogError("[Controller] Failed to stop recording: " + e.Message);
             _recording = false;
+            sensorRecorder.StopSession();
             SetIdle();
         }
     }
 
     void StartVideoRecording()
     {
-#if PICO_XR
-        try
-        {
-            PXR_Enterprise.Record();
-            sensorRecorder.LogAction("video_start", "pxr_enterprise", "system_recording");
-            Debug.Log("[Video] PXR_Enterprise.Record() called — video recording started.");
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Video] PXR_Enterprise.Record() failed: {e.Message}. Trying shell fallback.");
-            StartVideoShellFallback();
-        }
-#else
+        Debug.Log("[Video] Starting video recording via shell broadcast.");
+        sensorRecorder.LogAction("video_start", "shell_broadcast", "system_recording");
         StartVideoShellFallback();
-#endif
     }
 
     void StopVideoRecording()
     {
-#if PICO_XR
-        try
-        {
-            PXR_Enterprise.Record(); // Toggle off
-            sensorRecorder.LogAction("video_stop", "pxr_enterprise", "system_recording");
-            Debug.Log("[Video] PXR_Enterprise.Record() called — video recording stopped.");
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Video] PXR_Enterprise stop failed: {e.Message}");
-            StopVideoShellFallback();
-        }
-#else
+        Debug.Log("[Video] Stopping video recording via shell broadcast.");
+        sensorRecorder.LogAction("video_stop", "shell_broadcast", "system_recording");
         StopVideoShellFallback();
-#endif
     }
 
     void StartVideoShellFallback()
@@ -221,12 +225,11 @@ public class SimpleRecordingController : MonoBehaviour
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
-            string outPath = $"/sdcard/DCIM/ScreenRecording/capture_{_videoStartTimeMs}.mp4";
             using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
             using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
-            using var runtime = act.Call<AndroidJavaObject>("getRuntime");
-            // Use am broadcast to trigger system recording
-            runtime?.Call<AndroidJavaObject>("exec", $"am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command start");
+            using var runtimeClass = new AndroidJavaClass("java.lang.Runtime");
+            using var runtime = runtimeClass.CallStatic<AndroidJavaObject>("getRuntime");
+            runtime?.Call<AndroidJavaObject>("exec", "am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command start");
             Debug.Log("[Video] Shell fallback: triggered system recording via broadcast.");
         }
         catch (System.Exception e)
@@ -243,8 +246,9 @@ public class SimpleRecordingController : MonoBehaviour
         {
             using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
             using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
-            using var runtime = act.Call<AndroidJavaObject>("getRuntime");
-            runtime?.Call<AndroidJavaObject>("exec", $"am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command stop");
+            using var runtimeClass = new AndroidJavaClass("java.lang.Runtime");
+            using var runtime = runtimeClass.CallStatic<AndroidJavaObject>("getRuntime");
+            runtime?.Call<AndroidJavaObject>("exec", "am broadcast -a com.pico.recorder.action.RECORD_CONTROL --es command stop");
             Debug.Log("[Video] Shell fallback: stopped system recording via broadcast.");
         }
         catch (System.Exception e)
@@ -260,6 +264,8 @@ public class SimpleRecordingController : MonoBehaviour
         yield return new WaitForSeconds(3f);
 
         string videoPath = FindNewestVideo();
+        string statusMsg;
+
         if (videoPath != null && _sessionDir != null)
         {
             try
@@ -268,26 +274,27 @@ public class SimpleRecordingController : MonoBehaviour
                 File.Copy(videoPath, destPath, true);
                 sensorRecorder?.LogAction("video_saved", "pov_video.mp4", $"src={videoPath}");
                 Debug.Log($"[Video] Copied to session: {destPath}");
-
-                if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
-                if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
-                SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK");
+                statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK";
             }
             catch (System.Exception e)
             {
                 Debug.LogError($"[Video] Failed to copy video: {e.Message}");
-                if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
-                if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
-                SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo at: {videoPath}");
+                statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo at: {videoPath}";
             }
         }
         else
         {
             Debug.LogWarning("[Video] No video file found after recording.");
-            if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
-            if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
-            SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: not found");
+            statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo: not found";
         }
+
+        // Now that all logging is done, close the session
+        sensorRecorder.StopSession();
+
+        // Reset UI
+        if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
+        if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
+        SetStatus(statusMsg);
     }
 
     string FindNewestVideo()
