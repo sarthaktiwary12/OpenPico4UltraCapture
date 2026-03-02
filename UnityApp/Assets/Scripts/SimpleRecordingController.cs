@@ -9,6 +9,10 @@ using UnityEngine.XR;
 
 public class SimpleRecordingController : MonoBehaviour
 {
+    // Enterprise recorder toggle can crash/steal focus on some firmware variants.
+    // Keep disabled for stable in-app capture flow.
+    const bool EnableEnterpriseRecorder = false;
+
     [Header("Systems")]
     public SensorRecorder sensorRecorder;
     public SyncManager syncManager;
@@ -214,7 +218,7 @@ public class SimpleRecordingController : MonoBehaviour
     {
         _videoBackend = "none";
 
-        if (TryStartVideoEnterprise())
+        if (EnableEnterpriseRecorder && TryStartVideoEnterprise())
         {
             _videoBackend = "enterprise_record";
             sensorRecorder.LogAction("video_start", _videoBackend, "ok");
@@ -236,7 +240,7 @@ public class SimpleRecordingController : MonoBehaviour
     {
         bool stopped = false;
 
-        if (_videoBackend == "enterprise_record")
+        if (EnableEnterpriseRecorder && _videoBackend == "enterprise_record")
         {
             stopped = TryStopVideoEnterprise();
         }
@@ -249,7 +253,10 @@ public class SimpleRecordingController : MonoBehaviour
         if (!stopped)
         {
             // Last-chance stop attempts when start backend is unknown.
-            stopped = TryStopVideoEnterprise() || TryStopVideoShellBroadcast();
+            if (EnableEnterpriseRecorder)
+                stopped = TryStopVideoEnterprise() || TryStopVideoShellBroadcast();
+            else
+                stopped = TryStopVideoShellBroadcast();
         }
 
         sensorRecorder.LogAction("video_stop", _videoBackend, stopped ? "ok" : "failed");
