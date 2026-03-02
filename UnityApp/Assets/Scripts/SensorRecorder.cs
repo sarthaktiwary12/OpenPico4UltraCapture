@@ -19,6 +19,9 @@ public class SensorRecorder : MonoBehaviour
     public string SessionId { get; private set; }
     public long FrameIndex { get; private set; }
     public double SessionElapsed => _elapsed;
+    public bool HasHeadPose { get; private set; }
+    public Vector3 LastHeadPosition { get; private set; }
+    public Quaternion LastHeadRotation { get; private set; } = Quaternion.identity;
 
     private string _sessionDir;
     private double _startRealtime, _startWallclock, _elapsed;
@@ -100,10 +103,13 @@ public class SensorRecorder : MonoBehaviour
     {
         var hmd = InputDevices.GetDeviceAtXRNode(XRNode.Head);
         if (!hmd.isValid) return;
-        hmd.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 p);
-        hmd.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion r);
+        if (!hmd.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 p)) return;
+        if (!hmd.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion r)) return;
         string ts = "0";
         if (hmd.TryGetFeatureValue(CommonUsages.trackingState, out InputTrackingState s)) ts = ((int)s).ToString();
+        HasHeadPose = true;
+        LastHeadPosition = p;
+        LastHeadRotation = r;
         _headW.WriteLine($"{_elapsed:F6},{FrameIndex},{p.x:F6},{p.y:F6},{p.z:F6},{r.x:F6},{r.y:F6},{r.z:F6},{r.w:F6},{ts}");
     }
 

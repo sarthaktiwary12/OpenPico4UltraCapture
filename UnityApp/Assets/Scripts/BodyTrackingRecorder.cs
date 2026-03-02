@@ -19,6 +19,7 @@ public class BodyTrackingRecorder : MonoBehaviour
     private float _nextStartAttemptTime;
     private bool _loggedFallbackActive;
     private bool _loggedBadNativeOnce;
+    private long _lastFrameWritten = -1;
 
     // Matches BodyTrackerRole enum order (0–23)
     static readonly string[] BodyJointNames = {
@@ -81,6 +82,7 @@ public class BodyTrackingRecorder : MonoBehaviour
     void Update()
     {
         if (!_on || !_ownsWriter || sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        if (sensorRecorder.FrameIndex == _lastFrameWritten) return;
         if (!_bodyTrackingStarted && Time.realtimeSinceStartup >= _nextStartAttemptTime)
         {
             TryStartBodyTracking(forceLog: false);
@@ -94,6 +96,7 @@ public class BodyTrackingRecorder : MonoBehaviour
         }
         if (!_available) return;
         SampleBody();
+        _lastFrameWritten = sensorRecorder.FrameIndex;
         _frameCount++;
         if (_frameCount % 60 == 0) _w?.Flush();
     }
@@ -162,17 +165,27 @@ public class BodyTrackingRecorder : MonoBehaviour
         var head = InputDevices.GetDeviceAtXRNode(XRNode.Head);
         if (!head.isValid) return;
 
-        InputTrackingState headState = 0;
-        head.TryGetFeatureValue(CommonUsages.trackingState, out headState);
-        Vector3 headPos = Vector3.zero;
-        Quaternion headRot = Quaternion.identity;
-        bool headPosValid = ((headState & InputTrackingState.Position) != 0) &&
-                            head.TryGetFeatureValue(CommonUsages.devicePosition, out headPos);
-        bool headRotValid = ((headState & InputTrackingState.Rotation) != 0) &&
-                            head.TryGetFeatureValue(CommonUsages.deviceRotation, out headRot);
-        if (!headPosValid) return;
-        if (!headRotValid) headRot = Quaternion.identity;
-        headRot = SanitizeQuaternion(headRot);
+        Vector3 headPos;
+        Quaternion headRot;
+        if (sensorRecorder.HasHeadPose)
+        {
+            headPos = sensorRecorder.LastHeadPosition;
+            headRot = SanitizeQuaternion(sensorRecorder.LastHeadRotation);
+        }
+        else
+        {
+            InputTrackingState headState = 0;
+            head.TryGetFeatureValue(CommonUsages.trackingState, out headState);
+            headPos = Vector3.zero;
+            headRot = Quaternion.identity;
+            bool headPosValid = ((headState & InputTrackingState.Position) != 0) &&
+                                head.TryGetFeatureValue(CommonUsages.devicePosition, out headPos);
+            bool headRotValid = ((headState & InputTrackingState.Rotation) != 0) &&
+                                head.TryGetFeatureValue(CommonUsages.deviceRotation, out headRot);
+            if (!headPosValid) return;
+            if (!headRotValid) headRot = Quaternion.identity;
+            headRot = SanitizeQuaternion(headRot);
+        }
 
         Vector3 leftWristPos = headPos + headRot * new Vector3(-0.20f, -0.35f, 0.25f);
         Vector3 rightWristPos = headPos + headRot * new Vector3(0.20f, -0.35f, 0.25f);
@@ -227,6 +240,8 @@ public class BodyTrackingRecorder : MonoBehaviour
     {
         int n = Mathf.Min(data.roleDatas.Length, 24);
         int validJointCount = 0;
+        Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+        Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
         for (int i = 0; i < n; i++)
         {
             var j = data.roleDatas[i];
@@ -235,8 +250,12 @@ public class BodyTrackingRecorder : MonoBehaviour
             bool posOk = p.sqrMagnitude > 1e-8f;
             bool quatOk = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w) > 1e-8f;
             if (posOk || quatOk) validJointCount++;
+            min = Vector3.Min(min, p);
+            max = Vector3.Max(max, p);
         }
-        return validJointCount >= 4;
+        Vector3 span = max - min;
+        bool hasSpatialSpread = span.x > 0.04f || span.y > 0.04f || span.z > 0.04f;
+        return validJointCount >= 6 && hasSpatialSpread;
     }
 
     Quaternion SanitizeQuaternion(Quaternion q)

@@ -119,11 +119,6 @@ public class SpatialMeshCapture : MonoBehaviour
         _queryInFlight = true;
         bool wrote = false;
 #if PICO_XR
-        if (!_providerReady && !_providerStartInFlight)
-        {
-            StartCoroutine(EnsureProviderReady());
-        }
-
         if (_hasEventMeshes && _eventMeshes.Count > 0)
         {
             wrote = SnapFromPicoMeshInfos(_eventMeshes);
