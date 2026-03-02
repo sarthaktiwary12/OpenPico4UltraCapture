@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using UnityEngine;
 #if PICO_XR
 using Unity.XR.PXR;
@@ -11,12 +12,14 @@ public class SpatialMeshCapture : MonoBehaviour
     public float intervalS = 1f;
     public SensorRecorder sensorRecorder;
     private string _dir; private StreamWriter _idx; private float _last; private int _n; private bool _on;
+    private bool _queryInFlight;
+    private bool _loggedNoMesh;
 
     public void StartCapture(string sessionDir)
     {
         _dir = Path.Combine(sessionDir, "depth_mesh"); Directory.CreateDirectory(_dir);
         _idx = new StreamWriter(Path.Combine(_dir, "depth_mesh_index.csv"), false, new UTF8Encoding(false));
-        _idx.WriteLine("ts_s,frame,snapshot,filename,verts,tris"); _n = 0; _last = Time.realtimeSinceStartup; _on = true;
+        _idx.WriteLine("ts_s,frame,snapshot,filename,verts,tris"); _n = 0; _last = Time.realtimeSinceStartup; _on = true; _loggedNoMesh = false;
     }
 
     public void StopCapture() { _on = false; _idx?.Flush(); _idx?.Close(); _idx = null; Debug.Log($"[Mesh] {_n} snapshots"); }
@@ -25,10 +28,83 @@ public class SpatialMeshCapture : MonoBehaviour
     {
         if (!_on || sensorRecorder == null || !sensorRecorder.IsRecording) return;
         if (Time.realtimeSinceStartup - _last < intervalS) return; _last = Time.realtimeSinceStartup;
-        Snap();
+        if (!_queryInFlight) StartCoroutine(SnapRoutine());
     }
 
-    void Snap()
+    System.Collections.IEnumerator SnapRoutine()
+    {
+        _queryInFlight = true;
+        bool wrote = false;
+#if PICO_XR
+        Task<(PxrResult result, List<PxrSpatialMeshInfo> meshInfos)> task = null;
+        try
+        {
+            task = PXR_MixedReality.QueryMeshAnchorAsync();
+        }
+        catch
+        {
+            task = null;
+        }
+
+        if (task != null)
+        {
+            float wait = 0f;
+            while (!task.IsCompleted && wait < 1.5f)
+            {
+                wait += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            if (task.IsCompletedSuccessfully)
+            {
+                var result = task.Result;
+                if (result.result == PxrResult.SUCCESS && result.meshInfos != null && result.meshInfos.Count > 0)
+                    wrote = SnapFromPicoMeshInfos(result.meshInfos);
+            }
+        }
+#endif
+
+        if (!wrote) wrote = SnapFromSceneMeshFilters();
+        if (!wrote && !_loggedNoMesh)
+        {
+            _loggedNoMesh = true;
+            Debug.LogWarning("[Mesh] No spatial mesh data available yet.");
+        }
+        _queryInFlight = false;
+    }
+
+    bool SnapFromPicoMeshInfos(List<PxrSpatialMeshInfo> meshInfos)
+    {
+        var verts = new List<Vector3>();
+        var tris = new List<int>();
+
+        for (int m = 0; m < meshInfos.Count; m++)
+        {
+            var info = meshInfos[m];
+            if (info.vertices == null || info.indices == null) continue;
+            if (info.vertices.Length == 0 || info.indices.Length < 3) continue;
+
+            int off = verts.Count;
+            for (int i = 0; i < info.vertices.Length; i++)
+            {
+                var world = info.position + info.rotation * info.vertices[i];
+                verts.Add(world);
+            }
+
+            for (int i = 0; i + 2 < info.indices.Length; i += 3)
+            {
+                tris.Add(info.indices[i] + off);
+                tris.Add(info.indices[i + 1] + off);
+                tris.Add(info.indices[i + 2] + off);
+            }
+        }
+
+        if (verts.Count == 0 || tris.Count < 3) return false;
+        WriteSnapshot(verts, tris);
+        return true;
+    }
+
+    bool SnapFromSceneMeshFilters()
     {
         var verts = new List<Vector3>(); var tris = new List<int>();
         foreach (var mf in FindObjectsByType<MeshFilter>(FindObjectsSortMode.None))
@@ -65,7 +141,13 @@ public class SpatialMeshCapture : MonoBehaviour
             foreach (var v in m.vertices) verts.Add(t.TransformPoint(v));
             foreach (var i in m.triangles) tris.Add(i + off);
         }
-        if (verts.Count == 0) return;
+        if (verts.Count == 0 || tris.Count < 3) return false;
+        WriteSnapshot(verts, tris);
+        return true;
+    }
+
+    void WriteSnapshot(List<Vector3> verts, List<int> tris)
+    {
         string fn = $"mesh_{_n:D4}.ply";
         using (var w = new StreamWriter(Path.Combine(_dir, fn), false, new UTF8Encoding(false)))
         {
