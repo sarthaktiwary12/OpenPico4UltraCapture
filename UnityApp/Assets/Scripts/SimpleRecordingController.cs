@@ -21,6 +21,8 @@ public class SimpleRecordingController : MonoBehaviour
     public AndroidScreenRecorder androidScreenRecorder;
 
     [Header("UI")]
+    public GameObject hudRoot;
+    public bool showHudInHeadset = true;
     public Button btnToggle;
     public Text txtStatus;
     public Text txtButtonLabel;
@@ -34,6 +36,8 @@ public class SimpleRecordingController : MonoBehaviour
     private string _videoBackend = "none";
     private bool _enterpriseRecordingToggled;
     private string _directVideoPath;
+    private bool _projectionStartConfirmed;
+    private Coroutine _projectionStartWatchdog;
 
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
@@ -48,9 +52,18 @@ public class SimpleRecordingController : MonoBehaviour
     void Start()
     {
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
+        SetHudVisible(true);
         SetIdle();
         Debug.Log("[Controller] Ready. Press A or Trigger to toggle recording.");
         StartCoroutine(LogDiagnostics());
+    }
+
+    void SetHudVisible(bool visible)
+    {
+        if (hudRoot != null)
+        {
+            hudRoot.SetActive(visible);
+        }
     }
 
     System.Collections.IEnumerator LogDiagnostics()
@@ -169,6 +182,7 @@ public class SimpleRecordingController : MonoBehaviour
             if (txtButtonLabel != null) txtButtonLabel.text = "STOP";
             if (btnImage != null) btnImage.color = new Color(0.8f, 0.2f, 0.2f, 1f);
             SetStatus("REC  00:00\n\nFrames: 0");
+            SetHudVisible(false);
 
             Debug.Log("[Controller] RECORDING STARTED -> " + _sessionDir);
         }
@@ -199,6 +213,7 @@ public class SimpleRecordingController : MonoBehaviour
 
             _recording = false;
 
+            SetHudVisible(true);
             if (txtButtonLabel != null) txtButtonLabel.text = "SAVING...";
             if (btnImage != null) btnImage.color = new Color(0.6f, 0.6f, 0.1f, 1f);
             SetStatus($"Saving video...\n{frames} frames, {dur:F1}s");
@@ -220,11 +235,14 @@ public class SimpleRecordingController : MonoBehaviour
     void StartVideoRecording()
     {
         _videoBackend = "none";
+        _projectionStartConfirmed = false;
 
         if (androidScreenRecorder != null && androidScreenRecorder.IsSupported && androidScreenRecorder.StartRecording(_directVideoPath))
         {
             _videoBackend = "android_projection";
-            sensorRecorder.LogAction("video_start", _videoBackend, "ok");
+            sensorRecorder.LogAction("video_start", _videoBackend, "pending");
+            if (_projectionStartWatchdog != null) StopCoroutine(_projectionStartWatchdog);
+            _projectionStartWatchdog = StartCoroutine(WaitForProjectionStartOrFallback());
             return;
         }
 
@@ -246,13 +264,73 @@ public class SimpleRecordingController : MonoBehaviour
         Debug.LogWarning("[Video] Failed to start system recording with all backends.");
     }
 
+    IEnumerator WaitForProjectionStartOrFallback()
+    {
+        const float timeoutS = 6f;
+        float startedAt = Time.realtimeSinceStartup;
+
+        while (Time.realtimeSinceStartup - startedAt < timeoutS)
+        {
+            if (androidScreenRecorder != null)
+            {
+                string evt = androidScreenRecorder.ConsumeLastEvent();
+                if (!string.IsNullOrEmpty(evt))
+                {
+                    if (evt.StartsWith("started:"))
+                    {
+                        _projectionStartConfirmed = true;
+                        sensorRecorder.LogAction("video_start", _videoBackend, "ok");
+                        _projectionStartWatchdog = null;
+                        yield break;
+                    }
+
+                    if (evt.StartsWith("error:"))
+                    {
+                        sensorRecorder.LogAction("video_start", _videoBackend, evt);
+                        break;
+                    }
+                }
+                else if (androidScreenRecorder.ConsumeStartedSignal())
+                {
+                    _projectionStartConfirmed = true;
+                    sensorRecorder.LogAction("video_start", _videoBackend, "ok");
+                    _projectionStartWatchdog = null;
+                    yield break;
+                }
+            }
+
+            yield return null;
+        }
+
+        sensorRecorder.LogAction("video_start", _videoBackend, "timeout_or_no_started_event");
+        if (TryStartVideoShellBroadcast())
+        {
+            _videoBackend = "shell_broadcast";
+            sensorRecorder.LogAction("video_start", _videoBackend, "ok_after_projection_fail");
+        }
+        else
+        {
+            _videoBackend = "none";
+            sensorRecorder.LogAction("video_start", _videoBackend, "failed_after_projection_fail");
+        }
+
+        _projectionStartWatchdog = null;
+    }
+
     void StopVideoRecording()
     {
         bool stopped = false;
 
+        if (_projectionStartWatchdog != null)
+        {
+            StopCoroutine(_projectionStartWatchdog);
+            _projectionStartWatchdog = null;
+        }
+
         if (_videoBackend == "android_projection")
         {
-            stopped = androidScreenRecorder != null && androidScreenRecorder.StopRecording();
+            bool projectionWasRecording = _projectionStartConfirmed || (androidScreenRecorder != null && androidScreenRecorder.IsRecording);
+            stopped = projectionWasRecording && androidScreenRecorder != null && androidScreenRecorder.StopRecording();
         }
 
         if (EnableEnterpriseRecorder && _videoBackend == "enterprise_record")
@@ -579,6 +657,7 @@ public class SimpleRecordingController : MonoBehaviour
 
     void SetIdle()
     {
+        SetHudVisible(true);
         SetStatus("Press A or Trigger\nto start recording");
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);

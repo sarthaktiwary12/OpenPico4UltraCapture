@@ -159,6 +159,7 @@ public static class BuildAndroid
 
         var sensorGo = new GameObject("SensorRecorder");
         var sensor = sensorGo.AddComponent<SensorRecorder>();
+        sensor.sampleRateHz = 30f;
 
         var syncGo = new GameObject("SyncManager");
         var sync = syncGo.AddComponent<SyncManager>();
@@ -265,6 +266,8 @@ public static class BuildAndroid
         controller.spatialMeshCapture = mesh;
         controller.bodyTrackingRecorder = body;
         controller.androidScreenRecorder = androidRecorder;
+        controller.hudRoot = canvasGo;
+        controller.showHudInHeadset = true;
         controller.btnToggle = btnToggle;
         controller.txtStatus = txtStatus;
         controller.txtButtonLabel = btnLabel;

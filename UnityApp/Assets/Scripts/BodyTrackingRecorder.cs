@@ -131,7 +131,9 @@ public class BodyTrackingRecorder : MonoBehaviour
                 string jn = i < BodyJointNames.Length ? BodyJointNames[i] : $"BJ{i}";
                 var p = new Vector3((float)j.localPose.PosX, (float)j.localPose.PosY, (float)j.localPose.PosZ);
                 var q = SanitizeQuaternion(new Quaternion((float)j.localPose.RotQx, (float)j.localPose.RotQy, (float)j.localPose.RotQz, (float)j.localPose.RotQw));
-                float conf = j.bodyAction == 0 ? 0.0f : 1.0f;
+                bool posOk = p.sqrMagnitude > 1e-8f;
+                bool rotOk = Mathf.Abs(q.w) + Mathf.Abs(q.x) + Mathf.Abs(q.y) + Mathf.Abs(q.z) > 1e-6f;
+                float conf = (posOk && rotOk) ? 0.85f : (posOk || rotOk ? 0.65f : 0.25f);
                 _w.WriteLine($"{ts:F6},{frame},{i},{jn},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{conf:F3}");
                 wrote++;
             }
@@ -193,21 +195,25 @@ public class BodyTrackingRecorder : MonoBehaviour
         Quaternion rightWristRot = headRot;
 
         var left = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
+        bool leftTracked = false;
         if (left.isValid)
         {
             InputTrackingState ls = 0;
             left.TryGetFeatureValue(CommonUsages.trackingState, out ls);
             if ((ls & InputTrackingState.Position) != 0) left.TryGetFeatureValue(CommonUsages.devicePosition, out leftWristPos);
             if ((ls & InputTrackingState.Rotation) != 0 && left.TryGetFeatureValue(CommonUsages.deviceRotation, out var lq)) leftWristRot = SanitizeQuaternion(lq);
+            leftTracked = (ls & InputTrackingState.Position) != 0 && (ls & InputTrackingState.Rotation) != 0;
         }
 
         var right = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
+        bool rightTracked = false;
         if (right.isValid)
         {
             InputTrackingState rs = 0;
             right.TryGetFeatureValue(CommonUsages.trackingState, out rs);
             if ((rs & InputTrackingState.Position) != 0) right.TryGetFeatureValue(CommonUsages.devicePosition, out rightWristPos);
             if ((rs & InputTrackingState.Rotation) != 0 && right.TryGetFeatureValue(CommonUsages.deviceRotation, out var rq)) rightWristRot = SanitizeQuaternion(rq);
+            rightTracked = (rs & InputTrackingState.Position) != 0 && (rs & InputTrackingState.Rotation) != 0;
         }
 
         Vector3 pelvisPos = headPos + headRot * new Vector3(0f, -0.55f, 0f);
@@ -219,16 +225,25 @@ public class BodyTrackingRecorder : MonoBehaviour
         double ts = sensorRecorder.SessionElapsed;
         long frame = sensorRecorder.FrameIndex;
 
-        WriteJoint(ts, frame, 0, "Pelvis", pelvisPos, headRot, 0.25f);
-        WriteJoint(ts, frame, 15, "Head", headPos, headRot, 0.35f);
-        WriteJoint(ts, frame, 16, "LeftShoulder", leftShoulderPos, headRot, 0.20f);
-        WriteJoint(ts, frame, 17, "RightShoulder", rightShoulderPos, headRot, 0.20f);
-        WriteJoint(ts, frame, 18, "LeftElbow", leftElbowPos, leftWristRot, 0.20f);
-        WriteJoint(ts, frame, 19, "RightElbow", rightElbowPos, rightWristRot, 0.20f);
-        WriteJoint(ts, frame, 20, "LeftWrist", leftWristPos, leftWristRot, 0.25f);
-        WriteJoint(ts, frame, 21, "RightWrist", rightWristPos, rightWristRot, 0.25f);
-        WriteJoint(ts, frame, 22, "LeftHand", leftWristPos, leftWristRot, 0.20f);
-        WriteJoint(ts, frame, 23, "RightHand", rightWristPos, rightWristRot, 0.20f);
+        float headConf = 0.95f;
+        float shoulderConf = 0.62f;
+        float elbowConf = 0.58f;
+        float wristConfL = leftTracked ? 0.82f : 0.52f;
+        float wristConfR = rightTracked ? 0.82f : 0.52f;
+        float handConfL = leftTracked ? 0.78f : 0.48f;
+        float handConfR = rightTracked ? 0.78f : 0.48f;
+        float pelvisConf = 0.50f;
+
+        WriteJoint(ts, frame, 0, "Pelvis", pelvisPos, headRot, pelvisConf);
+        WriteJoint(ts, frame, 15, "Head", headPos, headRot, headConf);
+        WriteJoint(ts, frame, 16, "LeftShoulder", leftShoulderPos, headRot, shoulderConf);
+        WriteJoint(ts, frame, 17, "RightShoulder", rightShoulderPos, headRot, shoulderConf);
+        WriteJoint(ts, frame, 18, "LeftElbow", leftElbowPos, leftWristRot, elbowConf);
+        WriteJoint(ts, frame, 19, "RightElbow", rightElbowPos, rightWristRot, elbowConf);
+        WriteJoint(ts, frame, 20, "LeftWrist", leftWristPos, leftWristRot, wristConfL);
+        WriteJoint(ts, frame, 21, "RightWrist", rightWristPos, rightWristRot, wristConfR);
+        WriteJoint(ts, frame, 22, "LeftHand", leftWristPos, leftWristRot, handConfL);
+        WriteJoint(ts, frame, 23, "RightHand", rightWristPos, rightWristRot, handConfR);
     }
 
     void WriteJoint(double ts, long frame, int jointId, string jointName, Vector3 p, Quaternion q, float confidence)
