@@ -215,6 +215,7 @@ public class SpatialMeshCapture : MonoBehaviour
         }
 
         _queryInFlight = false;
+        yield break;
     }
 
     void EnsureXRMeshSubsystem()

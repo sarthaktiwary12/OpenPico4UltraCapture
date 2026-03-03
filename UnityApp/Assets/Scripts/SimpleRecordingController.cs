@@ -33,7 +33,12 @@ public class SimpleRecordingController : MonoBehaviour
     public Text txtButtonLabel;
     public Image btnImage;
 
+    [Header("Hand Visualization")]
+    public HandVisualizer handVisualizer;
+    public float pinchProximityRadius = 0.15f;
+
     private bool _recording;
+    private bool _handNearButton;
     private float _startTime;
     private bool _triggerWasDown;
     private bool _handTrackingReady;
@@ -65,6 +70,9 @@ public class SimpleRecordingController : MonoBehaviour
 
     void Start()
     {
+        if (handVisualizer == null)
+            handVisualizer = new GameObject("HandVisualizer").AddComponent<HandVisualizer>();
+
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
         SetHudVisible(true);
         SetIdle();
@@ -122,7 +130,10 @@ public class SimpleRecordingController : MonoBehaviour
             {
                 // Refresh idle status to show live hand tracking state
                 if (_handTrackingReady && _handFrameCount % 36 == 0)
+                {
+                    _handNearButton = IsHandNearButton();
                     SetIdle();
+                }
             }
         }
         catch (System.Exception e)
@@ -300,6 +311,12 @@ public class SimpleRecordingController : MonoBehaviour
 
         if (pinchDetected)
         {
+            if (!IsHandNearButton())
+            {
+                if (_handDiagLogCount < 10)
+                    Debug.Log($"[Hand] PINCH via {_handMethod} suppressed (hand not near button)");
+                return false;
+            }
             if (_handDiagLogCount < 10)
             {
                 _handDiagLogCount++;
@@ -389,6 +406,40 @@ public class SimpleRecordingController : MonoBehaviour
         }
 
         _handStatus = sb.ToString();
+    }
+
+    bool IsHandNearButton()
+    {
+        if (btnToggle == null) return true;
+        Vector3 btnPos = btnToggle.transform.position;
+
+        if (handVisualizer != null)
+        {
+            if (handVisualizer.RightHandTracked &&
+                Vector3.Distance(handVisualizer.RightIndexTipPosition, btnPos) < pinchProximityRadius)
+                return true;
+            if (handVisualizer.LeftHandTracked &&
+                Vector3.Distance(handVisualizer.LeftIndexTipPosition, btnPos) < pinchProximityRadius)
+                return true;
+        }
+
+        // Fallback: read XRHandSubsystem directly
+        if (_xrHandSub != null && _xrHandSub.running)
+        {
+            if (CheckJointNearButton(_xrHandSub.rightHand, btnPos) ||
+                CheckJointNearButton(_xrHandSub.leftHand, btnPos))
+                return true;
+        }
+
+        return false;
+    }
+
+    bool CheckJointNearButton(XRHand hand, Vector3 btnPos)
+    {
+        if (!hand.isTracked) return false;
+        var indexTip = hand.GetJoint(XRHandJointID.IndexTip);
+        if (!indexTip.TryGetPose(out Pose pose)) return false;
+        return Vector3.Distance(pose.position, btnPos) < pinchProximityRadius;
     }
 
     void OnToggle()
@@ -1044,7 +1095,8 @@ public class SimpleRecordingController : MonoBehaviour
     void SetIdle()
     {
         SetHudVisible(true);
-        SetStatus($"Pinch at button or press A/Trigger\nHands: {_handStatus}");
+        string hint = _handNearButton ? "Pinch to record!" : "Move hand to button";
+        SetStatus($"{hint}\nHands: {_handStatus}");
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
     }

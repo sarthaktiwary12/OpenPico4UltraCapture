@@ -115,7 +115,7 @@ public static class BuildAndroid
         SetBool("spatialMesh", true);
         SetBool("spatialAnchor", true);
         SetBool("sceneCapture", true);
-        SetBool("videoSeeThrough", false);
+        SetBool("videoSeeThrough", true);
         SetBool("openMRC", false);
 
         if (instance is UnityEngine.Object obj) EditorUtility.SetDirty(obj);
@@ -685,7 +685,7 @@ public static class BuildAndroid
         SetBool("handTracking", true);
         SetBool("bodyTracking", true);
         SetBool("spatialMesh", true);
-        SetBool("videoSeeThrough", false);
+        SetBool("videoSeeThrough", true);
 
         return component;
     }
