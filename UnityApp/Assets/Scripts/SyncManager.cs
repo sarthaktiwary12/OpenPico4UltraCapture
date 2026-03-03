@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.XR;
 #if PICO_XR
 using Unity.XR.PXR;
 #endif
@@ -52,23 +53,33 @@ public class SyncManager : MonoBehaviour
     bool GetPalm(string side, out Vector3 pos)
     {
         pos = Vector3.zero;
-#if PICO_XR && !PICO_OPENXR_SDK
+#if PICO_XR
         try
         {
             var ht = side == "left" ? HandType.HandLeft : HandType.HandRight;
             var jl = new HandJointLocations();
-            if (!PXR_HandTracking.GetJointLocations(ht, ref jl) || jl.jointLocations == null || jl.jointLocations.Length < 1) return false;
-            if (((ulong)jl.jointLocations[0].locationStatus & (ulong)HandLocationStatus.PositionValid) == 0) return false;
-            pos = jl.jointLocations[0].pose.Position.ToVector3();
-            return true;
+            if (PXR_Plugin.HandTracking.UPxr_GetHandTrackerJointLocations(ht, ref jl) && jl.jointLocations != null && jl.jointLocations.Length > 0)
+            {
+                if (((ulong)jl.jointLocations[0].locationStatus & (ulong)HandLocationStatus.PositionValid) != 0)
+                {
+                    pos = jl.jointLocations[0].pose.Position.ToVector3();
+                    return true;
+                }
+            }
         }
         catch
         {
-            return false;
         }
-#else
-        return false;
 #endif
+
+        var node = side == "left" ? XRNode.LeftHand : XRNode.RightHand;
+        var dev = InputDevices.GetDeviceAtXRNode(node);
+        if (dev.isValid && dev.TryGetFeatureValue(CommonUsages.devicePosition, out var p))
+        {
+            pos = p;
+            return true;
+        }
+        return false;
     }
 
     static AudioClip MakeBeep(float hz, float dur)

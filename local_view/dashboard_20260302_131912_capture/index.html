@@ -1,0 +1,366 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>All Streams Dashboard - 20260302_131912_capture</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #0f1115; color: #e7ebf3; }
+    .card { background: #171b24; border: 1px solid #2a3243; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    img { max-width: 100%; border: 1px solid #2a3243; border-radius: 8px; background: #101622; }
+    video { width: 100%; max-width: 980px; border-radius: 8px; border: 1px solid #2a3243; background: black; }
+    pre { background: #0d121b; border: 1px solid #2a3243; border-radius: 8px; padding: 10px; overflow: auto; }
+    table { border-collapse: collapse; width: 100%; overflow: auto; display: block; }
+    th, td { border: 1px solid #2a3243; padding: 6px; text-align: left; white-space: nowrap; }
+    th { background: #1f2735; }
+    a { color: #7dbbff; }
+  </style>
+</head>
+<body>
+  <h1>All Data Streams Dashboard</h1>
+  <div class="card">
+    <p><b>Session:</b> 20260302_131912_capture</p>
+    <p><b>Duration:</b> 17.583 s | <b>Total frames:</b> 757 | <b>FPS:</b> 43.05</p>
+    <p><a href="../20260302_131912_capture/" target="_blank">Open raw session folder</a></p>
+  </div>
+
+  <div class="card">
+    <h2>POV Video Stream</h2>
+    <video controls>
+      <source src="../20260302_131912_capture/pov_video.mp4" type="video/mp4" />
+    </video>
+  </div>
+
+  <div class="card"><h2>IMU Stream</h2><img src="assets/imu.png" alt="imu" /></div>
+
+  <div class="card">
+    <h2>Head Pose Stream</h2>
+    <img src="assets/head_position.png" alt="head_position" />
+    <img src="assets/head_rotation.png" alt="head_rotation" />
+    <img src="assets/head_3d.png" alt="head_3d" />
+  </div>
+
+  <div class="card">
+    <h2>Hand Joint Stream</h2>
+    <img src="assets/hand_wrist.png" alt="hand_wrist" />
+    <img src="assets/hand_distance.png" alt="hand_distance" />
+  </div>
+
+  <div class="card">
+    <h2>Body Pose Stream</h2>
+    <img src="assets/body_position.png" alt="body_position" />
+    <img src="assets/body_confidence_heatmap.png" alt="body_confidence_heatmap" />
+    <img src="assets/body_3d.png" alt="body_3d" />
+  </div>
+
+  <div class="card">
+    <h2>Depth Mesh Stream</h2>
+    <img src="assets/depth_stats.png" alt="depth_stats" />
+    <img src="assets/depth_cloud.png" alt="depth_cloud" />
+  </div>
+
+  <div class="card">
+    <h2>Action Log Stream</h2>
+    <img src="assets/action_timeline.png" alt="action_timeline" />
+    <img src="assets/action_counts.png" alt="action_counts" />
+  </div>
+
+  <div class="card">
+    <h2>File Links (All Streams)</h2>
+    <ul>
+      <li><a href="../20260302_131912_capture/pov_video.mp4" target="_blank">pov_video.mp4</a></li>
+<li><a href="../20260302_131912_capture/imu.csv" target="_blank">imu.csv</a></li>
+<li><a href="../20260302_131912_capture/head_pose.csv" target="_blank">head_pose.csv</a></li>
+<li><a href="../20260302_131912_capture/hand_joints.csv" target="_blank">hand_joints.csv</a></li>
+<li><a href="../20260302_131912_capture/body_pose.csv" target="_blank">body_pose.csv</a></li>
+<li><a href="../20260302_131912_capture/depth_mesh/depth_mesh_index.csv" target="_blank">depth_mesh/depth_mesh_index.csv</a></li>
+<li><a href="../20260302_131912_capture/action_log.csv" target="_blank">action_log.csv</a></li>
+<li><a href="../20260302_131912_capture/session_summary.json" target="_blank">session_summary.json</a></li>
+<li><a href="../20260302_131912_capture/calibration.json" target="_blank">calibration.json</a></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Session Summary JSON</h2>
+    <pre>{
+  &quot;session_id&quot;: &quot;20260302_131912_capture&quot;,
+  &quot;task_type&quot;: &quot;capture&quot;,
+  &quot;scenario_category&quot;: &quot;general&quot;,
+  &quot;total_frames&quot;: 757,
+  &quot;duration_s&quot;: 17.583,
+  &quot;actual_fps&quot;: 43.05,
+  &quot;target_fps&quot;: 60,
+  &quot;start_unix_s&quot;: 1772457552.651,
+  &quot;end_unix_s&quot;: 1772457570.252
+}</pre>
+  </div>
+
+  <div class="card">
+    <h2>Calibration JSON</h2>
+    <pre>{
+  &quot;session_id&quot;: &quot;20260302_131912_capture&quot;,
+  &quot;task_type&quot;: &quot;capture&quot;,
+  &quot;scenario_category&quot;: &quot;general&quot;,
+  &quot;capture_start_utc&quot;: &quot;2026-03-02T13:19:12.6535570Z&quot;,
+  &quot;capture_start_unix_s&quot;: 1772457552.651,
+  &quot;sample_rate_hz&quot;: 60,
+  &quot;device&quot;: {
+    &quot;model&quot;: &quot;Pico A92Y0&quot;,
+    &quot;os&quot;: &quot;Android OS 14 / API-34 (UKQ1.240321.001/20)&quot;
+  },
+  &quot;coordinate_system&quot;: {
+    &quot;convention&quot;: &quot;Unity left-handed Y-up&quot;,
+    &quot;units&quot;: &quot;meters&quot;,
+    &quot;rotation_format&quot;: &quot;quaternion (x,y,z,w)&quot;,
+    &quot;origin&quot;: &quot;XR tracking origin (floor)&quot;,
+    &quot;axes&quot;: {
+      &quot;x&quot;: &quot;right&quot;,
+      &quot;y&quot;: &quot;up&quot;,
+      &quot;z&quot;: &quot;forward&quot;
+    }
+  },
+  &quot;camera_intrinsics&quot;: {
+    &quot;note&quot;: &quot;PICO 4 Ultra: 2x32MP stereo RGB. Spatial video output 2048x1536@60fps.&quot;,
+    &quot;sensor_resolution&quot;: [
+      3264,
+      2448
+    ],
+    &quot;output_resolution&quot;: [
+      2048,
+      1536
+    ],
+    &quot;stereo_baseline_mm&quot;: 64,
+    &quot;hfov_deg_approx&quot;: 100,
+    &quot;approx_fx&quot;: 860,
+    &quot;approx_fy&quot;: 860,
+    &quot;approx_cx&quot;: 1024,
+    &quot;approx_cy&quot;: 768,
+    &quot;calibration_note&quot;: &quot;Run checkerboard calibration for precise fx/fy/cx/cy per device.&quot;
+  },
+  &quot;extrinsics&quot;: {
+    &quot;note&quot;: &quot;Cameras rigidly mounted on HMD. Extrinsics = fixed offset from HMD tracking center.&quot;,
+    &quot;reference&quot;: &quot;HMD tracking origin&quot;
+  },
+  &quot;depth_sensor&quot;: {
+    &quot;type&quot;: &quot;iToF&quot;,
+    &quot;fov_deg&quot;: 60,
+    &quot;range_m&quot;: 3.0,
+    &quot;access&quot;: &quot;spatial_mesh&quot;
+  },
+  &quot;hand_tracking&quot;: {
+    &quot;joints_per_hand&quot;: 26,
+    &quot;model&quot;: &quot;OpenXR XR_EXT_hand_tracking&quot;,
+    &quot;per_joint&quot;: [
+      &quot;position_xyz_m&quot;,
+      &quot;orientation_quat&quot;,
+      &quot;radius_m&quot;
+    ],
+    &quot;joint_names&quot;: [
+      &quot;Palm&quot;,
+      &quot;Wrist&quot;,
+      &quot;ThumbMeta&quot;,
+      &quot;ThumbProx&quot;,
+      &quot;ThumbDist&quot;,
+      &quot;ThumbTip&quot;,
+      &quot;IndexMeta&quot;,
+      &quot;IndexProx&quot;,
+      &quot;IndexInter&quot;,
+      &quot;IndexDist&quot;,
+      &quot;IndexTip&quot;,
+      &quot;MiddleMeta&quot;,
+      &quot;MiddleProx&quot;,
+      &quot;MiddleInter&quot;,
+      &quot;MiddleDist&quot;,
+      &quot;MiddleTip&quot;,
+      &quot;RingMeta&quot;,
+      &quot;RingProx&quot;,
+      &quot;RingInter&quot;,
+      &quot;RingDist&quot;,
+      &quot;RingTip&quot;,
+      &quot;LittleMeta&quot;,
+      &quot;LittleProx&quot;,
+      &quot;LittleInter&quot;,
+      &quot;LittleDist&quot;,
+      &quot;LittleTip&quot;
+    ]
+  },
+  &quot;body_tracking&quot;: {
+    &quot;joints&quot;: 24,
+    &quot;model&quot;: &quot;PICO BodyTrackerResult&quot;,
+    &quot;per_joint&quot;: [
+      &quot;position_xyz_m&quot;,
+      &quot;orientation_quat&quot;,
+      &quot;confidence&quot;
+    ],
+    &quot;joint_names&quot;: [
+      &quot;Pelvis&quot;,
+      &quot;LeftHip&quot;,
+      &quot;RightHip&quot;,
+      &quot;Spine1&quot;,
+      &quot;LeftKnee&quot;,
+      &quot;RightKnee&quot;,
+      &quot;Spine2&quot;,
+      &quot;LeftAnkle&quot;,
+      &quot;RightAnkle&quot;,
+      &quot;Spine3&quot;,
+      &quot;LeftFoot&quot;,
+      &quot;RightFoot&quot;,
+      &quot;Neck&quot;,
+      &quot;LeftCollar&quot;,
+      &quot;RightCollar&quot;,
+      &quot;Head&quot;,
+      &quot;LeftShoulder&quot;,
+      &quot;RightShoulder&quot;,
+      &quot;LeftElbow&quot;,
+      &quot;RightElbow&quot;,
+      &quot;LeftWrist&quot;,
+      &quot;RightWrist&quot;,
+      &quot;LeftHand&quot;,
+      &quot;RightHand&quot;
+    ],
+    &quot;output_file&quot;: &quot;body_pose.csv&quot;
+  },
+  &quot;imu&quot;: {
+    &quot;location&quot;: &quot;HMD&quot;,
+    &quot;accel_unit&quot;: &quot;m/s^2&quot;,
+    &quot;gyro_unit&quot;: &quot;rad/s&quot;,
+    &quot;source&quot;: &quot;unity_fallback&quot;
+  },
+  &quot;sync&quot;: {
+    &quot;method&quot;: &quot;clap_gesture + audio_beep + wallclock&quot;,
+    &quot;sensor_epoch_realtime&quot;: 14.704195,
+    &quot;sensor_epoch_unix_s&quot;: 1772457552.651,
+    &quot;note&quot;: &quot;Find sync_clap events in action_log.csv. Audio beep in video for alignment.&quot;
+  }
+}</pre>
+  </div>
+
+  <div class="card">
+    <h2>CSV Previews</h2>
+    <h3>imu.csv</h3><table><tr><th>ts_s</th><th>frame</th><th>accel_x</th><th>accel_y</th><th>accel_z</th><th>gyro_x</th><th>gyro_y</th><th>gyro_z</th></tr>
+<tr><td>0.043921</td><td>0</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.308934</td><td>0.049902</td><td>-0.046800</td></tr>
+<tr><td>0.068310</td><td>1</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.369452</td><td>0.106505</td><td>-0.009519</td></tr>
+<tr><td>0.090340</td><td>2</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.347141</td><td>0.109290</td><td>0.011165</td></tr>
+<tr><td>0.112706</td><td>3</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.327295</td><td>0.108358</td><td>0.027582</td></tr>
+<tr><td>0.135019</td><td>4</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.323329</td><td>0.104097</td><td>0.028840</td></tr>
+<tr><td>0.157109</td><td>5</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.308961</td><td>0.093611</td><td>0.017676</td></tr>
+<tr><td>0.179492</td><td>6</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.288334</td><td>0.077297</td><td>0.000852</td></tr>
+<tr><td>0.201788</td><td>7</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.251150</td><td>0.060964</td><td>-0.020819</td></tr>
+<tr><td>0.225496</td><td>8</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.197876</td><td>0.042577</td><td>-0.039595</td></tr>
+<tr><td>0.245330</td><td>9</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.156303</td><td>0.022337</td><td>-0.048239</td></tr>
+<tr><td>0.267470</td><td>10</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.130244</td><td>0.001819</td><td>-0.036678</td></tr>
+<tr><td>0.290031</td><td>11</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.121756</td><td>-0.006703</td><td>-0.025915</td></tr>
+<tr><td>0.312129</td><td>12</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.109350</td><td>-0.010143</td><td>-0.036534</td></tr>
+<tr><td>0.334612</td><td>13</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.110305</td><td>-0.009732</td><td>-0.043580</td></tr>
+<tr><td>0.355901</td><td>14</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.121561</td><td>-0.010554</td><td>-0.041282</td></tr>
+<tr><td>0.378240</td><td>15</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.118283</td><td>-0.008180</td><td>-0.035879</td></tr>
+<tr><td>0.400755</td><td>16</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.099763</td><td>-0.009321</td><td>-0.031584</td></tr>
+<tr><td>0.423413</td><td>17</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.096845</td><td>-0.014815</td><td>-0.020276</td></tr>
+<tr><td>0.444959</td><td>18</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.114873</td><td>-0.036942</td><td>-0.019134</td></tr>
+<tr><td>0.467387</td><td>19</td><td>0.000000</td><td>0.000000</td><td>0.000000</td><td>-0.111349</td><td>-0.062619</td><td>-0.026035</td></tr>
+</table>
+    <h3>head_pose.csv</h3><table><tr><th>ts_s</th><th>frame</th><th>pos_x</th><th>pos_y</th><th>pos_z</th><th>rot_x</th><th>rot_y</th><th>rot_z</th><th>rot_w</th><th>tracking_state</th></tr>
+<tr><td>0.043921</td><td>0</td><td>0.127258</td><td>1.185928</td><td>-0.297635</td><td>0.132257</td><td>-0.100811</td><td>-0.027617</td><td>0.985689</td><td>15</td></tr>
+<tr><td>0.068310</td><td>1</td><td>0.128958</td><td>1.189435</td><td>-0.300156</td><td>0.117965</td><td>-0.096493</td><td>-0.029009</td><td>0.987893</td><td>15</td></tr>
+<tr><td>0.090340</td><td>2</td><td>0.129471</td><td>1.190333</td><td>-0.300854</td><td>0.114409</td><td>-0.095176</td><td>-0.028845</td><td>0.988443</td><td>15</td></tr>
+<tr><td>0.112706</td><td>3</td><td>0.129945</td><td>1.191249</td><td>-0.301465</td><td>0.111041</td><td>-0.093948</td><td>-0.028510</td><td>0.988954</td><td>15</td></tr>
+<tr><td>0.135019</td><td>4</td><td>0.130369</td><td>1.192127</td><td>-0.301994</td><td>0.107543</td><td>-0.092798</td><td>-0.028374</td><td>0.989453</td><td>15</td></tr>
+<tr><td>0.157109</td><td>5</td><td>0.130837</td><td>1.192845</td><td>-0.302602</td><td>0.104312</td><td>-0.091805</td><td>-0.028509</td><td>0.989888</td><td>15</td></tr>
+<tr><td>0.179492</td><td>6</td><td>0.131224</td><td>1.193531</td><td>-0.303137</td><td>0.101419</td><td>-0.091037</td><td>-0.028891</td><td>0.990248</td><td>15</td></tr>
+<tr><td>0.201788</td><td>7</td><td>0.131599</td><td>1.194049</td><td>-0.303673</td><td>0.099123</td><td>-0.090441</td><td>-0.029531</td><td>0.990517</td><td>15</td></tr>
+<tr><td>0.225496</td><td>8</td><td>0.131980</td><td>1.194455</td><td>-0.304197</td><td>0.097602</td><td>-0.090068</td><td>-0.030305</td><td>0.990678</td><td>15</td></tr>
+<tr><td>0.245330</td><td>9</td><td>0.132281</td><td>1.194802</td><td>-0.304663</td><td>0.096431</td><td>-0.089952</td><td>-0.031062</td><td>0.990780</td><td>15</td></tr>
+<tr><td>0.267470</td><td>10</td><td>0.132577</td><td>1.195249</td><td>-0.305070</td><td>0.095368</td><td>-0.090130</td><td>-0.031479</td><td>0.990854</td><td>15</td></tr>
+<tr><td>0.290031</td><td>11</td><td>0.132880</td><td>1.195516</td><td>-0.305409</td><td>0.094137</td><td>-0.090268</td><td>-0.031763</td><td>0.990950</td><td>15</td></tr>
+<tr><td>0.312129</td><td>12</td><td>0.133106</td><td>1.195780</td><td>-0.305726</td><td>0.093115</td><td>-0.090336</td><td>-0.032408</td><td>0.991019</td><td>15</td></tr>
+<tr><td>0.334612</td><td>13</td><td>0.133308</td><td>1.196168</td><td>-0.305933</td><td>0.091959</td><td>-0.090347</td><td>-0.033117</td><td>0.991103</td><td>15</td></tr>
+<tr><td>0.355901</td><td>14</td><td>0.133495</td><td>1.196557</td><td>-0.306173</td><td>0.090524</td><td>-0.090386</td><td>-0.033698</td><td>0.991212</td><td>15</td></tr>
+<tr><td>0.378240</td><td>15</td><td>0.133635</td><td>1.196775</td><td>-0.306400</td><td>0.089270</td><td>-0.090372</td><td>-0.034135</td><td>0.991312</td><td>15</td></tr>
+<tr><td>0.400755</td><td>16</td><td>0.133754</td><td>1.197004</td><td>-0.306590</td><td>0.088421</td><td>-0.090429</td><td>-0.034517</td><td>0.991369</td><td>15</td></tr>
+<tr><td>0.423413</td><td>17</td><td>0.133769</td><td>1.197379</td><td>-0.306769</td><td>0.087413</td><td>-0.090609</td><td>-0.034708</td><td>0.991436</td><td>15</td></tr>
+<tr><td>0.444959</td><td>18</td><td>0.133711</td><td>1.197719</td><td>-0.306960</td><td>0.085930</td><td>-0.091213</td><td>-0.035093</td><td>0.991496</td><td>15</td></tr>
+<tr><td>0.467387</td><td>19</td><td>0.133629</td><td>1.197921</td><td>-0.307201</td><td>0.084719</td><td>-0.092150</td><td>-0.035660</td><td>0.991494</td><td>15</td></tr>
+</table>
+    <h3>hand_joints.csv</h3><table><tr><th>ts_s</th><th>frame</th><th>hand</th><th>joint_id</th><th>joint_name</th><th>pos_x</th><th>pos_y</th><th>pos_z</th><th>rot_x</th><th>rot_y</th><th>rot_z</th><th>rot_w</th><th>radius</th></tr>
+<tr><td>0.043921</td><td>0</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028865</td><td>1.160303</td><td>-0.004905</td><td>-0.290929</td><td>-0.058205</td><td>-0.017310</td><td>0.954816</td><td>0.0300</td></tr>
+<tr><td>0.043921</td><td>0</td><td>right</td><td>1</td><td>WristFallback</td><td>0.115364</td><td>0.932764</td><td>-0.106830</td><td>-0.564660</td><td>-0.260286</td><td>-0.197429</td><td>0.757913</td><td>0.0300</td></tr>
+<tr><td>0.068310</td><td>1</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028870</td><td>1.160309</td><td>-0.004906</td><td>-0.290862</td><td>-0.058265</td><td>-0.017245</td><td>0.954834</td><td>0.0300</td></tr>
+<tr><td>0.068310</td><td>1</td><td>right</td><td>1</td><td>WristFallback</td><td>0.122388</td><td>0.928302</td><td>-0.101105</td><td>-0.542143</td><td>-0.257572</td><td>-0.230152</td><td>0.766008</td><td>0.0300</td></tr>
+<tr><td>0.090340</td><td>2</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028860</td><td>1.160303</td><td>-0.004904</td><td>-0.290931</td><td>-0.058168</td><td>-0.017300</td><td>0.954818</td><td>0.0300</td></tr>
+<tr><td>0.090340</td><td>2</td><td>right</td><td>1</td><td>WristFallback</td><td>0.124007</td><td>0.926995</td><td>-0.100019</td><td>-0.539489</td><td>-0.252371</td><td>-0.228313</td><td>0.770152</td><td>0.0300</td></tr>
+<tr><td>0.112706</td><td>3</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028870</td><td>1.160303</td><td>-0.004906</td><td>-0.290929</td><td>-0.058242</td><td>-0.017322</td><td>0.954813</td><td>0.0300</td></tr>
+<tr><td>0.112706</td><td>3</td><td>right</td><td>1</td><td>WristFallback</td><td>0.124438</td><td>0.926317</td><td>-0.098901</td><td>-0.534238</td><td>-0.242619</td><td>-0.215833</td><td>0.780476</td><td>0.0300</td></tr>
+<tr><td>0.135019</td><td>4</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028875</td><td>1.160298</td><td>-0.004907</td><td>-0.290965</td><td>-0.058280</td><td>-0.017336</td><td>0.954800</td><td>0.0300</td></tr>
+<tr><td>0.135019</td><td>4</td><td>right</td><td>1</td><td>WristFallback</td><td>0.124657</td><td>0.925070</td><td>-0.097465</td><td>-0.530887</td><td>-0.235025</td><td>-0.207890</td><td>0.787213</td><td>0.0300</td></tr>
+<tr><td>0.157109</td><td>5</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028875</td><td>1.160301</td><td>-0.004907</td><td>-0.290932</td><td>-0.058289</td><td>-0.017297</td><td>0.954810</td><td>0.0300</td></tr>
+<tr><td>0.157109</td><td>5</td><td>right</td><td>1</td><td>WristFallback</td><td>0.125688</td><td>0.923778</td><td>-0.095562</td><td>-0.524427</td><td>-0.239825</td><td>-0.208279</td><td>0.789987</td><td>0.0300</td></tr>
+<tr><td>0.179492</td><td>6</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028870</td><td>1.160301</td><td>-0.004906</td><td>-0.290932</td><td>-0.058253</td><td>-0.017285</td><td>0.954812</td><td>0.0300</td></tr>
+<tr><td>0.179492</td><td>6</td><td>right</td><td>1</td><td>WristFallback</td><td>0.127033</td><td>0.922761</td><td>-0.093771</td><td>-0.514778</td><td>-0.245735</td><td>-0.211482</td><td>0.793659</td><td>0.0300</td></tr>
+<tr><td>0.201788</td><td>7</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028865</td><td>1.160303</td><td>-0.004905</td><td>-0.290899</td><td>-0.058240</td><td>-0.017196</td><td>0.954825</td><td>0.0300</td></tr>
+<tr><td>0.201788</td><td>7</td><td>right</td><td>1</td><td>WristFallback</td><td>0.127709</td><td>0.922262</td><td>-0.093316</td><td>-0.510573</td><td>-0.243964</td><td>-0.206206</td><td>0.798296</td><td>0.0300</td></tr>
+<tr><td>0.225496</td><td>8</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028865</td><td>1.160305</td><td>-0.004905</td><td>-0.290918</td><td>-0.058207</td><td>-0.017316</td><td>0.954819</td><td>0.0300</td></tr>
+<tr><td>0.225496</td><td>8</td><td>right</td><td>1</td><td>WristFallback</td><td>0.127636</td><td>0.922280</td><td>-0.093216</td><td>-0.509548</td><td>-0.241288</td><td>-0.198736</td><td>0.801652</td><td>0.0300</td></tr>
+<tr><td>0.245330</td><td>9</td><td>left</td><td>1</td><td>WristFallback</td><td>0.028865</td><td>1.160305</td><td>-0.004905</td><td>-0.290918</td><td>-0.058207</td><td>-0.017316</td><td>0.954819</td><td>0.0300</td></tr>
+<tr><td>0.245330</td><td>9</td><td>right</td><td>1</td><td>WristFallback</td><td>0.127636</td><td>0.922280</td><td>-0.093216</td><td>-0.509548</td><td>-0.241288</td><td>-0.198736</td><td>0.801652</td><td>0.0300</td></tr>
+</table>
+    <h3>body_pose.csv</h3><table><tr><th>ts_s</th><th>frame</th><th>joint_id</th><th>joint_name</th><th>pos_x</th><th>pos_y</th><th>pos_z</th><th>rot_x</th><th>rot_y</th><th>rot_z</th><th>rot_w</th><th>confidence</th></tr>
+<tr><td>0.043921</td><td>1</td><td>0</td><td>Pelvis</td><td>0.111980</td><td>0.656009</td><td>-0.444098</td><td>0.132257</td><td>-0.100811</td><td>-0.027617</td><td>0.985689</td><td>0.250</td></tr>
+<tr><td>0.043921</td><td>1</td><td>15</td><td>Head</td><td>0.127258</td><td>1.185928</td><td>-0.297635</td><td>0.132257</td><td>-0.100811</td><td>-0.027617</td><td>0.985689</td><td>0.350</td></tr>
+<tr><td>0.043921</td><td>1</td><td>16</td><td>LeftShoulder</td><td>-0.047593</td><td>1.040455</td><td>-0.353892</td><td>0.132257</td><td>-0.100811</td><td>-0.027617</td><td>0.985689</td><td>0.200</td></tr>
+<tr><td>0.043921</td><td>1</td><td>17</td><td>RightShoulder</td><td>0.284978</td><td>1.012878</td><td>-0.288806</td><td>0.132257</td><td>-0.100811</td><td>-0.027617</td><td>0.985689</td><td>0.200</td></tr>
+<tr><td>0.043921</td><td>1</td><td>18</td><td>LeftElbow</td><td>-0.009364</td><td>1.100380</td><td>-0.179399</td><td>-0.290926</td><td>-0.058194</td><td>-0.017348</td><td>0.954817</td><td>0.200</td></tr>
+<tr><td>0.043921</td><td>1</td><td>19</td><td>RightElbow</td><td>0.202626</td><td>0.971515</td><td>-0.195832</td><td>-0.543677</td><td>-0.260852</td><td>-0.221712</td><td>0.766300</td><td>0.200</td></tr>
+<tr><td>0.043921</td><td>1</td><td>20</td><td>LeftWrist</td><td>0.028865</td><td>1.160305</td><td>-0.004905</td><td>-0.290926</td><td>-0.058194</td><td>-0.017348</td><td>0.954817</td><td>0.250</td></tr>
+<tr><td>0.043921</td><td>1</td><td>21</td><td>RightWrist</td><td>0.120275</td><td>0.930152</td><td>-0.102859</td><td>-0.543677</td><td>-0.260852</td><td>-0.221712</td><td>0.766300</td><td>0.250</td></tr>
+<tr><td>0.043921</td><td>1</td><td>22</td><td>LeftHand</td><td>0.028865</td><td>1.160305</td><td>-0.004905</td><td>-0.290926</td><td>-0.058194</td><td>-0.017348</td><td>0.954817</td><td>0.200</td></tr>
+<tr><td>0.043921</td><td>1</td><td>23</td><td>RightHand</td><td>0.120275</td><td>0.930152</td><td>-0.102859</td><td>-0.543677</td><td>-0.260852</td><td>-0.221712</td><td>0.766300</td><td>0.200</td></tr>
+<tr><td>0.068310</td><td>2</td><td>0</td><td>Pelvis</td><td>0.109956</td><td>0.655668</td><td>-0.431426</td><td>0.117965</td><td>-0.096493</td><td>-0.029009</td><td>0.987893</td><td>0.250</td></tr>
+<tr><td>0.068310</td><td>2</td><td>15</td><td>Head</td><td>0.128958</td><td>1.189435</td><td>-0.300156</td><td>0.117965</td><td>-0.096493</td><td>-0.029009</td><td>0.987893</td><td>0.350</td></tr>
+<tr><td>0.068310</td><td>2</td><td>16</td><td>LeftShoulder</td><td>-0.047068</td><td>1.043222</td><td>-0.350520</td><td>0.117965</td><td>-0.096493</td><td>-0.029009</td><td>0.987893</td><td>0.200</td></tr>
+<tr><td>0.068310</td><td>2</td><td>17</td><td>RightShoulder</td><td>0.286028</td><td>1.015994</td><td>-0.288026</td><td>0.117965</td><td>-0.096493</td><td>-0.029009</td><td>0.987893</td><td>0.200</td></tr>
+<tr><td>0.068310</td><td>2</td><td>18</td><td>LeftElbow</td><td>-0.009099</td><td>1.101764</td><td>-0.177713</td><td>-0.290893</td><td>-0.058255</td><td>-0.017282</td><td>0.954824</td><td>0.200</td></tr>
+<tr><td>0.068310</td><td>2</td><td>19</td><td>RightElbow</td><td>0.204684</td><td>0.971693</td><td>-0.194158</td><td>-0.541945</td><td>-0.256672</td><td>-0.231978</td><td>0.765899</td><td>0.200</td></tr>
+<tr><td>0.068310</td><td>2</td><td>20</td><td>LeftWrist</td><td>0.028870</td><td>1.160306</td><td>-0.004906</td><td>-0.290893</td><td>-0.058255</td><td>-0.017282</td><td>0.954824</td><td>0.250</td></tr>
+<tr><td>0.068310</td><td>2</td><td>21</td><td>RightWrist</td><td>0.123340</td><td>0.927391</td><td>-0.100290</td><td>-0.541945</td><td>-0.256672</td><td>-0.231978</td><td>0.765899</td><td>0.250</td></tr>
+<tr><td>0.068310</td><td>2</td><td>22</td><td>LeftHand</td><td>0.028870</td><td>1.160306</td><td>-0.004906</td><td>-0.290893</td><td>-0.058255</td><td>-0.017282</td><td>0.954824</td><td>0.200</td></tr>
+<tr><td>0.068310</td><td>2</td><td>23</td><td>RightHand</td><td>0.123340</td><td>0.927391</td><td>-0.100290</td><td>-0.541945</td><td>-0.256672</td><td>-0.231978</td><td>0.765899</td><td>0.200</td></tr>
+</table>
+    <h3>depth_mesh_index.csv</h3><table><tr><th>ts_s</th><th>frame</th><th>snapshot</th><th>filename</th><th>verts</th><th>tris</th></tr>
+<tr><td>1.000224</td><td>44</td><td>0</td><td>mesh_0000.ply</td><td>3215</td><td>2660</td></tr>
+<tr><td>2.001224</td><td>88</td><td>1</td><td>mesh_0001.ply</td><td>3215</td><td>2660</td></tr>
+<tr><td>2.001224</td><td>88</td><td>2</td><td>mesh_0002.ply</td><td>3229</td><td>2676</td></tr>
+<tr><td>3.003560</td><td>127</td><td>3</td><td>mesh_0003.ply</td><td>3229</td><td>2676</td></tr>
+<tr><td>3.003560</td><td>127</td><td>4</td><td>mesh_0004.ply</td><td>3242</td><td>2686</td></tr>
+<tr><td>4.008969</td><td>170</td><td>5</td><td>mesh_0005.ply</td><td>3242</td><td>2686</td></tr>
+<tr><td>4.008969</td><td>170</td><td>6</td><td>mesh_0006.ply</td><td>3258</td><td>2714</td></tr>
+<tr><td>5.021112</td><td>214</td><td>7</td><td>mesh_0007.ply</td><td>3258</td><td>2714</td></tr>
+<tr><td>5.021112</td><td>214</td><td>8</td><td>mesh_0008.ply</td><td>3295</td><td>2724</td></tr>
+<tr><td>6.021382</td><td>258</td><td>9</td><td>mesh_0009.ply</td><td>3295</td><td>2724</td></tr>
+<tr><td>6.021382</td><td>258</td><td>10</td><td>mesh_0010.ply</td><td>3416</td><td>2840</td></tr>
+<tr><td>7.022000</td><td>302</td><td>11</td><td>mesh_0011.ply</td><td>3416</td><td>2840</td></tr>
+<tr><td>7.022000</td><td>302</td><td>12</td><td>mesh_0012.ply</td><td>3449</td><td>2871</td></tr>
+<tr><td>8.012356</td><td>345</td><td>13</td><td>mesh_0013.ply</td><td>3449</td><td>2871</td></tr>
+<tr><td>8.012356</td><td>345</td><td>14</td><td>mesh_0014.ply</td><td>3456</td><td>2871</td></tr>
+<tr><td>9.012529</td><td>388</td><td>15</td><td>mesh_0015.ply</td><td>3456</td><td>2871</td></tr>
+<tr><td>9.012529</td><td>388</td><td>16</td><td>mesh_0016.ply</td><td>3463</td><td>2882</td></tr>
+<tr><td>10.024401</td><td>432</td><td>17</td><td>mesh_0017.ply</td><td>3463</td><td>2882</td></tr>
+<tr><td>10.024401</td><td>432</td><td>18</td><td>mesh_0018.ply</td><td>3450</td><td>2863</td></tr>
+<tr><td>11.013487</td><td>475</td><td>19</td><td>mesh_0019.ply</td><td>3450</td><td>2863</td></tr>
+</table>
+    <h3>action_log.csv</h3><table><tr><th>ts_s</th><th>frame</th><th>event_type</th><th>action_type</th><th>metadata</th></tr>
+<tr><td>0.000000</td><td>0</td><td>session_start</td><td>capture</td><td>scenario=general</td></tr>
+<tr><td>0.000000</td><td>0</td><td>mesh_provider_start</td><td>xr_mesh_subsystem</td><td>ok</td></tr>
+<tr><td>0.000000</td><td>0</td><td>task_start</td><td>capture</td><td>user_initiated</td></tr>
+<tr><td>0.000000</td><td>0</td><td>video_start</td><td>android_projection</td><td>pending</td></tr>
+<tr><td>0.043921</td><td>0</td><td>imu_fallback</td><td>xr_head_kinematics</td><td>native_or_gyro_unavailable</td></tr>
+<tr><td>0.068310</td><td>2</td><td>mesh_provider_start</td><td>spatial_anchor</td><td>ok</td></tr>
+<tr><td>0.510810</td><td>22</td><td>mesh_provider_start</td><td>scene_capture</td><td>ok</td></tr>
+<tr><td>2.244722</td><td>93</td><td>video_start</td><td>android_projection</td><td>ok</td></tr>
+<tr><td>17.582529</td><td>757</td><td>task_end</td><td>capture</td><td>user_initiated</td></tr>
+<tr><td>17.582529</td><td>757</td><td>video_stop</td><td>android_projection</td><td>ok</td></tr>
+<tr><td>17.582529</td><td>757</td><td>video_saved</td><td>pov_video.mp4</td><td>src=/storage/emulated/0/Android/data/com.sentientx.datacapture/files/dataset_capture/20260302_131912_capture/pov_video.mp4</td></tr>
+<tr><td>17.582529</td><td>757</td><td>session_end</td><td>capture</td><td>frames=757</td></tr>
+</table>
+  </div>
+</body>
+</html>

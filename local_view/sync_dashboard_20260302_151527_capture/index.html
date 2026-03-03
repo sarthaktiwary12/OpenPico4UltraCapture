@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Synced Multi-Stream Viewer - 20260302_151527_capture</title>
+  <style>
+    :root {
+      --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#9da7b3;
+      --accent:#58a6ff; --ok:#3fb950; --warn:#f2cc60; --danger:#f85149;
+    }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { padding:14px; display:grid; gap:12px; }
+    .top { display:grid; grid-template-columns: 1.2fr 1fr; gap:12px; }
+    .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:10px; }
+    h1 { font-size:18px; margin:0 0 10px 0; }
+    h2 { font-size:14px; margin:0 0 8px 0; color:var(--muted); }
+    video { width:100%; border-radius:8px; background:#000; border:1px solid #000; }
+    .meta { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px; font-size:13px; }
+    .k { color:var(--muted); } .v { font-weight:600; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    canvas { width:100%; height:170px; border:1px solid var(--border); border-radius:8px; background:#0b0f15; }
+    .legend { font-size:12px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+    .footer { font-size:12px; color:var(--muted); }
+    .controls { margin-top:8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .controls button { background:#21262d; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 8px; cursor:pointer; }
+    .controls button:hover { border-color:#4f627b; }
+    .controls input[type=range] { width: min(560px, 95%); }
+    .mode { font-size:12px; color:var(--muted); }
+    @media (max-width: 1100px) {
+      .top { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="panel">
+        <h1>Synced Video + Sensor Streams</h1>
+        <video id="video" controls preload="metadata">
+          <source src="../20260302_151527_capture/pov_video.mp4" type="video/mp4" />
+        </video>
+        <div class="controls">
+          <button id="btn_play">Play Streams</button>
+          <button id="btn_pause">Pause</button>
+          <button id="btn_video">Use Video Clock</button>
+          <input id="timeline" type="range" min="0.034" max="2.497" step="0.001" value="0.034" />
+          <span class="mode" id="clock_mode"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Session Status</h2>
+        <div class="meta">
+          <div><span class="k">Session</span><br><span class="v">20260302_151527_capture</span></div>
+          <div><span class="k">Session Time</span><br><span class="v" id="t_session">0.000s</span></div>
+          <div><span class="k">Video Time</span><br><span class="v" id="t_video">0.000s</span></div>
+          <div><span class="k">Video Offset</span><br><span class="v">0.034s</span></div>
+          <div><span class="k">Target FPS</span><br><span class="v">None</span></div>
+          <div><span class="k">Actual FPS</span><br><span class="v">None</span></div>
+        </div>
+        <hr style="border:0;border-top:1px solid var(--border);margin:10px 0" />
+        <div class="meta">
+          <div><span class="k">IMU accel mag</span><br><span class="v" id="v_accel">-</span></div>
+          <div><span class="k">IMU gyro mag</span><br><span class="v" id="v_gyro">-</span></div>
+          <div><span class="k">Head pos (x,y,z)</span><br><span class="v" id="v_head">-</span></div>
+          <div><span class="k">L-R wrist dist</span><br><span class="v" id="v_wrist">-</span></div>
+          <div><span class="k">Body mean conf</span><br><span class="v" id="v_body">-</span></div>
+          <div><span class="k">Depth (verts,tris)</span><br><span class="v" id="v_depth">-</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <h2>IMU Magnitudes</h2>
+        <div class="legend">
+          <span><span class="dot" style="background:#58a6ff"></span>accel magnitude</span>
+          <span><span class="dot" style="background:#f2cc60"></span>gyro magnitude</span>
+        </div>
+        <canvas id="c_imu" width="900" height="170"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Head Position</h2>
+        <div class="legend">
+          <span><span class="dot" style="background:#58a6ff"></span>x</span>
+          <span><span class="dot" style="background:#3fb950"></span>y</span>
+          <span><span class="dot" style="background:#f85149"></span>z</span>
+        </div>
+        <canvas id="c_head" width="900" height="170"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Hand Stream</h2>
+        <div class="legend">
+          <span><span class="dot" style="background:#a371f7"></span>left-right wrist distance</span>
+        </div>
+        <canvas id="c_hand" width="900" height="170"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Body Stream</h2>
+        <div class="legend">
+          <span><span class="dot" style="background:#3fb950"></span>mean confidence</span>
+        </div>
+        <canvas id="c_body" width="900" height="170"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Depth Mesh Stream</h2>
+        <div class="legend">
+          <span><span class="dot" style="background:#58a6ff"></span>vertices</span>
+          <span><span class="dot" style="background:#f2cc60"></span>triangles</span>
+        </div>
+        <canvas id="c_depth" width="900" height="170"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Data Files</h2>
+        <div class="footer">
+          <div><a href="../20260302_151527_capture/pov_video.mp4" target="_blank">pov_video.mp4</a></div>
+          <div><a href="../20260302_151527_capture/imu.csv" target="_blank">imu.csv</a></div>
+          <div><a href="../20260302_151527_capture/head_pose.csv" target="_blank">head_pose.csv</a></div>
+          <div><a href="../20260302_151527_capture/hand_joints.csv" target="_blank">hand_joints.csv</a></div>
+          <div><a href="../20260302_151527_capture/body_pose.csv" target="_blank">body_pose.csv</a></div>
+          <div><a href="../20260302_151527_capture/depth_mesh/depth_mesh_index.csv" target="_blank">depth_mesh_index.csv</a></div>
+          <div style="margin-top:10px">If video is missing, use timeline controls to play streams.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script id="data-json" type="application/json">{"session":"20260302_151527_capture","video_rel":"../20260302_151527_capture/pov_video.mp4","has_video":false,"video_start_ts":0.034374,"duration_s":2.4629209999999997,"session_min_ts":0.034374,"session_max_ts":2.497295,"target_fps":null,"actual_fps":null,"streams":{"imu":{"ts":[0.034374,0.067847,0.101309,0.134713,0.177397,0.222439,0.26635,0.299906,0.333615,0.377744,0.411158,0.444634,0.488999,0.522419,0.555831,0.600404,0.644668,0.689129,0.733825,0.778103,0.811507,0.855598,0.889256,0.933684,0.978227,1.047169,1.089109,1.133526,1.166984,1.200603,1.24479,1.289139,1.322537,1.356067,1.400832,1.444883,1.489286,1.533821,1.578383,1.623459,1.667327,1.71151,1.745241,1.789763,1.833547,1.867276,1.911409,1.945296,1.989564,2.078368,2.122462,2.157606,2.223572,2.278711,2.32247,2.359468,2.394385,2.428977,2.463218,2.497295],"accel_mag":[0.0,0.31619964031605097,0.28521385776991975,0.24186157160657,0.4096218473641268,0.17255165425750052,0.38736213759349275,0.1766837302470151,0.2803127552092484,0.28924886417927387,0.22581172749438858,0.21632653670319785,0.30095125832267255,0.12846506694428644,0.164081528408898,0.33204487663717985,0.07372663378318584,0.284763402780273,0.10861084057312143,0.10443486098999702,0.21469926536669842,0.04011256921464892,0.10681801207661562,0.8977620706701748,1.244007725150451,0.24605459973956997,0.3941409808723269,0.20150947057148455,0.17760827300832582,0.0591786892470592,0.11086800809070217,0.03948952653552585,0.15165443852719906,0.0852803361039343,0.09885232081241188,0.1564292122207358,0.1462248763856547,0.12450421990037124,0.1304513649564465,0.12251426415728088,0.17466198909894506,0.15543218077991441,0.0318185002317834,0.12378763781573666,0.17199960178151577,0.025545794898573816,0.19194721398082337,0.12735708297538853,0.0978316091352892,0.025618568441659655,0.5079892700057749,0.5481308792104309,0.13474489752491559,0.3686116286025171,0.48741705931983953,0.4159712069975517,0.18635523633372905,0.2501857567588531,0.10951256075446324,0.09898056925477848],"gyro_mag":[0.024417947866272466,0.10921880877394699,0.10839280340041031,0.0569606093629624,0.08608685245727131,0.11416119859654593,0.013216846030729116,0.10064541673121533,0.1200916706603751,0.014409064542849407,0.1047885729504892,0.1362521086956088,0.007970672117205676,0.1062705892003992,0.13077348805855107,0.0073602633784396595,0.11651363047300517,0.058392407614346574,0.07247307584199805,0.07961806067721065,0.005182218347387536,0.06532056325537923,0.037997899336673864,0.02470473027579941,0.016395069624737798,0.005726807924140638,0.023881997634201374,0.008365575533099918,0.015088201682109104,0.008221204838708253,0.002752287412317253,0.012233152537265281,0.015045853282549315,0.003720297971937194,0.004396516120748336,0.014969097668196304,0.02461503130203169,0.015077965280501213,0.03194280826727669,0.009581554466786692,0.055173334990736234,0.003127608831040097,0.053710900876823876,0.04057697307587149,0.01010253616672566,0.02732072101903608,0.036204832633227296,0.014521434949756171,0.026707947431429468,0.03544940204009089,0.027809834825111783,0.07748166154000571,0.013340949591389662,0.06828004948738688,0.017389537946708073,0.08412113407461884,0.09892009776582311,0.02036614232003695,0.06783201000265288,0.08886941158238869]},"head":{"ts":[0.034374,0.067847,0.101309,0.134713,0.177397,0.222439,0.26635,0.299906,0.333615,0.377744,0.411158,0.444634,0.488999,0.522419,0.555831,0.600404,0.644668,0.689129,0.733825,0.778103,0.811507,0.855598,0.889256,0.933684,0.978227,1.047169,1.089109,1.133526,1.166984,1.200603,1.24479,1.289139,1.322537,1.356067,1.400832,1.444883,1.489286,1.533821,1.578383,1.623459,1.667327,1.71151,1.745241,1.789763,1.833547,1.867276,1.911409,1.945296,1.989564,2.078368,2.122462,2.157606,2.223572,2.278711,2.32247,2.359468,2.394385,2.428977,2.463218,2.497295],"x":[-0.207693,-0.207934,-0.208201,-0.208329,-0.208056,-0.207673,-0.207706,-0.20791,-0.207938,-0.207658,-0.20735,-0.207168,-0.207278,-0.207487,-0.207533,-0.207365,-0.207116,-0.207178,-0.20747,-0.207756,-0.207882,-0.207906,-0.207955,-0.20805,-0.208185,-0.208091,-0.208306,-0.208471,-0.208558,-0.208567,-0.208573,-0.208562,-0.208457,-0.208362,-0.208374,-0.208462,-0.208379,-0.208064,-0.207862,-0.207854,-0.207718,-0.207484,-0.207248,-0.207092,-0.207093,-0.207127,-0.20723,-0.207271,-0.207233,-0.207165,-0.206928,-0.207012,-0.206938,-0.207154,-0.207004,-0.206743,-0.20651,-0.206483,-0.206663,-0.206787],"y":[-0.369703,-0.369754,-0.369801,-0.369879,-0.369943,-0.369842,-0.369735,-0.369748,-0.369818,-0.369849,-0.369879,-0.369814,-0.369801,-0.369866,-0.369883,-0.369889,-0.369588,-0.369242,-0.369118,-0.369085,-0.369115,-0.368968,-0.368867,-0.369408,-0.36844,-0.368679,-0.368551,-0.368575,-0.368375,-0.368254,-0.368229,-0.368202,-0.368248,-0.368224,-0.368287,-0.368261,-0.368388,-0.368473,-0.368511,-0.368615,-0.368769,-0.368959,-0.368957,-0.369014,-0.36908,-0.369165,-0.369373,-0.369434,-0.369567,-0.369606,-0.369683,-0.369585,-0.369665,-0.369384,-0.369775,-0.369823,-0.369887,-0.369936,-0.370187,-0.370374],"z":[0.695929,0.695884,0.696107,0.696352,0.696467,0.696386,0.696435,0.696509,0.696601,0.69664,0.696716,0.69682,0.696915,0.696912,0.696905,0.696845,0.69671,0.696407,0.695855,0.695409,0.695198,0.695065,0.695024,0.695063,0.694651,0.694399,0.694181,0.693982,0.693826,0.693659,0.693671,0.69382,0.693814,0.693682,0.693516,0.69348,0.6936,0.693803,0.694195,0.694617,0.695086,0.69561,0.695987,0.69632,0.69629,0.696211,0.696303,0.696519,0.696822,0.69688,0.696762,0.697325,0.697436,0.697922,0.698568,0.698741,0.698791,0.698729,0.698684,0.698598]},"hand":{"ts":[0.034374,0.067847,0.101309,0.134713,0.177397,0.222439,0.26635,0.299906,0.333615,0.377744,0.411158,0.444634,0.488999,0.522419,0.555831,0.600404,0.644668,0.689129,0.733825,0.778103,0.811507,0.855598,0.889256,0.933684,0.978227,1.047169,1.089109,1.133526,1.166984,1.200603,1.24479,1.289139,1.322537,1.356067,1.400832,1.444883,1.489286,1.533821,1.578383,1.623459,1.667327,1.71151,1.745241,1.789763,1.833547,1.867276,1.911409,1.945296,1.989564,2.078368,2.122462,2.157606,2.223572,2.278711,2.32247,2.359468,2.394385,2.428977,2.463218,2.497295],"wrist_dist":[1.0364017149739764,1.0478588089179763,1.0568710468552915,1.0676607750554479,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676,1.0676047706871676]},"body":{"ts":[0.034374,0.067847,0.101309,0.134713,0.177397,0.222439,0.26635,0.299906,0.333615,0.377744,0.411158,0.444634,0.488999,0.522419],"mean_conf":[0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001,0.7050000000000001]},"depth":{"ts":[0.978227,1.989564,1.989564],"verts":[4879.0,4879.0,4882.0],"tris":[4175.0,4175.0,4177.0]}}}</script>
+  <script>
+    const DATA = JSON.parse(document.getElementById("data-json").textContent);
+
+    function finite(v) { return Number.isFinite(v); }
+    function nearestIndex(ts, t) {
+      if (!ts || ts.length === 0) return -1;
+      let lo = 0, hi = ts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (ts[mid] < t) lo = mid + 1; else hi = mid;
+      }
+      let i = lo;
+      if (i > 0 && Math.abs(ts[i - 1] - t) <= Math.abs(ts[i] - t)) i--;
+      return i;
+    }
+
+    function makeChart(canvasId, x, series) {
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext("2d");
+      const pad = {l:50,r:10,t:12,b:20};
+      const w = canvas.width, h = canvas.height;
+      const xMin = x.length ? x[0] : 0;
+      const xMax = x.length ? x[x.length - 1] : 1;
+      let yMin = Infinity, yMax = -Infinity;
+      for (const s of series) {
+        for (const y of s.y) {
+          if (!finite(y)) continue;
+          if (y < yMin) yMin = y;
+          if (y > yMax) yMax = y;
+        }
+      }
+      if (!finite(yMin) || !finite(yMax) || yMin === yMax) { yMin = 0; yMax = 1; }
+      const yPad = Math.max((yMax - yMin) * 0.12, 1e-6);
+      yMin -= yPad; yMax += yPad;
+      const sx = (t) => pad.l + ((t - xMin) / Math.max(1e-6, xMax - xMin)) * (w - pad.l - pad.r);
+      const sy = (v) => h - pad.b - ((v - yMin) / Math.max(1e-6, yMax - yMin)) * (h - pad.t - pad.b);
+
+      function draw(cursorTs) {
+        ctx.clearRect(0, 0, w, h);
+        ctx.strokeStyle = "#2f3745";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pad.l, pad.t, w - pad.l - pad.r, h - pad.t - pad.b);
+
+        for (const s of series) {
+          ctx.strokeStyle = s.color;
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          let started = false;
+          const n = Math.min(x.length, s.y.length);
+          for (let i = 0; i < n; i++) {
+            const yv = s.y[i];
+            if (!finite(yv)) {
+              started = false;
+              continue;
+            }
+            const X = sx(x[i]), Y = sy(yv);
+            if (!started) { ctx.moveTo(X, Y); started = true; } else { ctx.lineTo(X, Y); }
+          }
+          ctx.stroke();
+
+          if (finite(cursorTs)) {
+            const idx = nearestIndex(x, cursorTs);
+            if (idx >= 0 && idx < s.y.length && finite(s.y[idx])) {
+              ctx.fillStyle = s.color;
+              ctx.beginPath();
+              ctx.arc(sx(x[idx]), sy(s.y[idx]), 3.2, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+
+        if (finite(cursorTs)) {
+          const X = sx(Math.max(xMin, Math.min(xMax, cursorTs)));
+          ctx.strokeStyle = "#ffffff";
+          ctx.globalAlpha = 0.75;
+          ctx.beginPath();
+          ctx.moveTo(X, pad.t);
+          ctx.lineTo(X, h - pad.b);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+      return {draw};
+    }
+
+    const charts = [
+      makeChart("c_imu", DATA.streams.imu.ts, [
+        {y: DATA.streams.imu.accel_mag, color:"#58a6ff"},
+        {y: DATA.streams.imu.gyro_mag, color:"#f2cc60"}
+      ]),
+      makeChart("c_head", DATA.streams.head.ts, [
+        {y: DATA.streams.head.x, color:"#58a6ff"},
+        {y: DATA.streams.head.y, color:"#3fb950"},
+        {y: DATA.streams.head.z, color:"#f85149"}
+      ]),
+      makeChart("c_hand", DATA.streams.hand.ts, [
+        {y: DATA.streams.hand.wrist_dist, color:"#a371f7"}
+      ]),
+      makeChart("c_body", DATA.streams.body.ts, [
+        {y: DATA.streams.body.mean_conf, color:"#3fb950"}
+      ]),
+      makeChart("c_depth", DATA.streams.depth.ts, [
+        {y: DATA.streams.depth.verts, color:"#58a6ff"},
+        {y: DATA.streams.depth.tris, color:"#f2cc60"}
+      ])
+    ];
+
+    const video = document.getElementById("video");
+    const timeline = document.getElementById("timeline");
+    const btnPlay = document.getElementById("btn_play");
+    const btnPause = document.getElementById("btn_pause");
+    const btnVideo = document.getElementById("btn_video");
+    const clockModeEl = document.getElementById("clock_mode");
+
+    const tSession = document.getElementById("t_session");
+    const tVideo = document.getElementById("t_video");
+    const vAccel = document.getElementById("v_accel");
+    const vGyro = document.getElementById("v_gyro");
+    const vHead = document.getElementById("v_head");
+    const vWrist = document.getElementById("v_wrist");
+    const vBody = document.getElementById("v_body");
+    const vDepth = document.getElementById("v_depth");
+
+    const minTs = Number(DATA.session_min_ts || 0);
+    const maxTs = Number(DATA.session_max_ts || 1);
+    const videoOffset = Number(DATA.video_start_ts || 0);
+    let currentTs = Math.max(minTs, Math.min(maxTs, videoOffset));
+    let mode = DATA.has_video ? "video" : "streams";
+    let streamPlaying = false;
+    let lastMs = performance.now();
+
+    function clampTs(ts) {
+      return Math.max(minTs, Math.min(maxTs, ts));
+    }
+
+    function setModeLabel() {
+      clockModeEl.textContent = DATA.has_video
+        ? ("clock mode: " + mode)
+        : "clock mode: streams (no video file)";
+    }
+
+    function drawAt(st) {
+      const stClamped = clampTs(st);
+      currentTs = stClamped;
+      timeline.value = String(stClamped);
+
+      const vt = Math.max(0, stClamped - videoOffset);
+      tVideo.textContent = vt.toFixed(3) + "s";
+      tSession.textContent = stClamped.toFixed(3) + "s";
+
+      const iImu = nearestIndex(DATA.streams.imu.ts, stClamped);
+      if (iImu >= 0) {
+        vAccel.textContent = DATA.streams.imu.accel_mag[iImu].toFixed(4);
+        vGyro.textContent = DATA.streams.imu.gyro_mag[iImu].toFixed(4);
+      }
+      const iHead = nearestIndex(DATA.streams.head.ts, stClamped);
+      if (iHead >= 0) {
+        vHead.textContent = DATA.streams.head.x[iHead].toFixed(3) + ", " + DATA.streams.head.y[iHead].toFixed(3) + ", " + DATA.streams.head.z[iHead].toFixed(3);
+      }
+      const iHand = nearestIndex(DATA.streams.hand.ts, stClamped);
+      if (iHand >= 0) {
+        const d = DATA.streams.hand.wrist_dist[iHand];
+        vWrist.textContent = Number.isFinite(d) ? d.toFixed(3) + " m" : "n/a";
+      }
+      const iBody = nearestIndex(DATA.streams.body.ts, stClamped);
+      if (iBody >= 0) {
+        vBody.textContent = DATA.streams.body.mean_conf[iBody].toFixed(3);
+      }
+      const iDepth = nearestIndex(DATA.streams.depth.ts, stClamped);
+      if (iDepth >= 0) {
+        vDepth.textContent = Math.round(DATA.streams.depth.verts[iDepth]) + ", " + Math.round(DATA.streams.depth.tris[iDepth]);
+      }
+
+      for (const ch of charts) ch.draw(stClamped);
+    }
+
+    function raf(nowMs) {
+      const dt = (nowMs - lastMs) / 1000.0;
+      lastMs = nowMs;
+
+      if (mode === "video" && DATA.has_video && !video.paused && !video.ended) {
+        drawAt(videoOffset + (video.currentTime || 0));
+      } else if (mode === "streams" && streamPlaying) {
+        let next = currentTs + dt;
+        if (next > maxTs) {
+          next = maxTs;
+          streamPlaying = false;
+        }
+        drawAt(next);
+        if (DATA.has_video) {
+          video.currentTime = Math.max(0, next - videoOffset);
+        }
+      }
+      requestAnimationFrame(raf);
+    }
+
+    btnPlay.addEventListener("click", () => {
+      mode = "streams";
+      setModeLabel();
+      streamPlaying = true;
+      if (DATA.has_video) video.pause();
+    });
+
+    btnPause.addEventListener("click", () => {
+      streamPlaying = false;
+      if (DATA.has_video) video.pause();
+    });
+
+    btnVideo.addEventListener("click", () => {
+      if (!DATA.has_video) return;
+      mode = "video";
+      streamPlaying = false;
+      setModeLabel();
+      video.currentTime = Math.max(0, currentTs - videoOffset);
+    });
+
+    timeline.addEventListener("input", () => {
+      const ts = Number(timeline.value);
+      mode = "streams";
+      streamPlaying = false;
+      setModeLabel();
+      drawAt(ts);
+      if (DATA.has_video) {
+        video.currentTime = Math.max(0, ts - videoOffset);
+      }
+    });
+
+    if (!DATA.has_video) {
+      btnVideo.disabled = true;
+      video.style.opacity = 0.55;
+    } else {
+      video.addEventListener("timeupdate", () => {
+        if (mode === "video") drawAt(videoOffset + (video.currentTime || 0));
+      });
+      video.addEventListener("seeking", () => {
+        if (mode === "video") drawAt(videoOffset + (video.currentTime || 0));
+      });
+      video.addEventListener("play", () => {
+        mode = "video";
+        streamPlaying = false;
+        setModeLabel();
+      });
+    }
+
+    setModeLabel();
+    drawAt(currentTs);
+    requestAnimationFrame(raf);
+  </script>
+</body>
+</html>

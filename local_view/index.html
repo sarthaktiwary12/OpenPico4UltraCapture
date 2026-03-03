@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>OpenPico Capture Viewer</title><style>body{font-family:Arial,sans-serif;margin:24px;background:#0f1115;color:#e7ebf3}.card{background:#171b24;border:1px solid #2a3243;border-radius:10px;padding:16px;margin-bottom:16px}a{color:#79b8ff}code{background:#111722;padding:2px 6px;border-radius:6px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #2a3243;padding:8px;text-align:left}th{background:#1f2735}pre{max-height:260px;overflow:auto;background:#0d121b;padding:10px;border-radius:8px;border:1px solid #2a3243}video{width:100%;max-width:960px;border-radius:8px;border:1px solid #2a3243;background:black}</style></head><body><h1>OpenPico Capture Viewer</h1><div class="card"><h2>Latest Session</h2><p><code>20260302_131912_capture</code></p><p><a href="20260302_131912_capture/" target="_blank">Open raw session folder</a></p></div><div class="card"><h2>POV Video</h2><p>File: <a href="20260302_131912_capture/pov_video.mp4" target="_blank">pov_video.mp4</a> (39905930 bytes)</p><video controls><source src="20260302_131912_capture/pov_video.mp4" type="video/mp4"/></video></div><div class="card"><h2>Collected Data Summary</h2><table><tr><th>File</th><th>Lines / Count</th><th>Link</th></tr><tr><td>action_log.csv</td><td>13 lines</td><td><a href="20260302_131912_capture/action_log.csv" target="_blank">open</a></td></tr><tr><td>body_pose.csv</td><td>7571 lines</td><td><a href="20260302_131912_capture/body_pose.csv" target="_blank">open</a></td></tr><tr><td>head_pose.csv</td><td>758 lines</td><td><a href="20260302_131912_capture/head_pose.csv" target="_blank">open</a></td></tr><tr><td>hand_joints.csv</td><td>1515 lines</td><td><a href="20260302_131912_capture/hand_joints.csv" target="_blank">open</a></td></tr><tr><td>imu.csv</td><td>758 lines</td><td><a href="20260302_131912_capture/imu.csv" target="_blank">open</a></td></tr><tr><td>depth_mesh_index.csv</td><td>34 lines</td><td><a href="20260302_131912_capture/depth_mesh/depth_mesh_index.csv" target="_blank">open</a></td></tr><tr><td>depth meshes (.ply)</td><td>33 files</td><td><a href="20260302_131912_capture/depth_mesh/" target="_blank">open folder</a></td></tr><tr><td>calibration.json</td><td>1 file</td><td><a href="20260302_131912_capture/calibration.json" target="_blank">open</a></td></tr><tr><td>session_summary.json</td><td>1 file</td><td><a href="20260302_131912_capture/session_summary.json" target="_blank">open</a></td></tr></table></div><div class="card"><h2>Quick Preview</h2><h3>action_log.csv (first 40 lines)</h3><pre>ts_s,frame,event_type,action_type,metadata
+0.000000,0,session_start,capture,scenario=general
+0.000000,0,mesh_provider_start,xr_mesh_subsystem,ok
+0.000000,0,task_start,capture,user_initiated
+0.000000,0,video_start,android_projection,pending
+0.043921,0,imu_fallback,xr_head_kinematics,native_or_gyro_unavailable
+0.068310,2,mesh_provider_start,spatial_anchor,ok
+0.510810,22,mesh_provider_start,scene_capture,ok
+2.244722,93,video_start,android_projection,ok
+17.582529,757,task_end,capture,user_initiated
+17.582529,757,video_stop,android_projection,ok
+17.582529,757,video_saved,pov_video.mp4,src=/storage/emulated/0/Android/data/com.sentientx.datacapture/files/dataset_capture/20260302_131912_capture/pov_video.mp4
+17.582529,757,session_end,capture,frames=757</pre><h3>session_summary.json</h3><pre>{
+  "session_id": "20260302_131912_capture", "task_type": "capture",
+  "scenario_category": "general",
+  "total_frames": 757, "duration_s": 17.583,
+  "actual_fps": 43.05, "target_fps": 60,
+  "start_unix_s": 1772457552.651, "end_unix_s": 1772457570.252
+}</pre></div></body></html>

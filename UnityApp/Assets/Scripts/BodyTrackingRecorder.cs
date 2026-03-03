@@ -1,4 +1,5 @@
 using System.IO;
+using System.Reflection;
 using System.Text;
 using UnityEngine;
 using UnityEngine.XR;
@@ -9,7 +10,14 @@ using Unity.XR.PXR;
 public class BodyTrackingRecorder : MonoBehaviour
 {
     private static BodyTrackingRecorder _activeWriter;
+
     public SensorRecorder sensorRecorder;
+
+    public int LastWrittenJointCount { get; private set; }
+    public int LastNativeJointCount { get; private set; }
+    public bool LastFrameUsedFallback { get; private set; }
+    public float FullJointFrameRatio => _framesSampled > 0 ? (float)_framesWith24Written / _framesSampled : 0f;
+
     private StreamWriter _w;
     private bool _on;
     private bool _ownsWriter;
@@ -20,9 +28,13 @@ public class BodyTrackingRecorder : MonoBehaviour
     private bool _loggedFallbackActive;
     private bool _loggedBadNativeOnce;
     private long _lastFrameWritten = -1;
+    private int _frameCount;
+    private int _nativeDiagnosticCounter;
+    private int _framesSampled;
+    private int _framesWith24Written;
 
     // Matches BodyTrackerRole enum order (0–23)
-    static readonly string[] BodyJointNames = {
+    private static readonly string[] BodyJointNames = {
         "Pelvis","LeftHip","RightHip","Spine1",
         "LeftKnee","RightKnee","Spine2",
         "LeftAnkle","RightAnkle","Spine3",
@@ -34,6 +46,13 @@ public class BodyTrackingRecorder : MonoBehaviour
         "LeftHand","RightHand"
     };
 
+    private readonly Vector3[] _fallbackPos = new Vector3[24];
+    private readonly Quaternion[] _fallbackRot = new Quaternion[24];
+    private readonly Vector3[] _framePos = new Vector3[24];
+    private readonly Quaternion[] _frameRot = new Quaternion[24];
+    private readonly float[] _frameConf = new float[24];
+    private readonly bool[] _frameHasNative = new bool[24];
+
     public void StartCapture(string sessionDir)
     {
         if (_activeWriter != null && _activeWriter != this)
@@ -43,33 +62,48 @@ public class BodyTrackingRecorder : MonoBehaviour
             _on = false;
             return;
         }
+
         _activeWriter = this;
         _ownsWriter = true;
 
         var path = Path.Combine(sessionDir, "body_pose.csv");
         _w = new StreamWriter(path, false, new UTF8Encoding(false), 65536);
         _w.WriteLine("ts_s,frame,joint_id,joint_name,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,confidence");
+
+        SetWantBodyTracking(true, true);
         TryStartBodyTracking(forceLog: true);
         _available = CheckAvailability();
         _nextProbeTime = Time.realtimeSinceStartup + 2f;
         _nextStartAttemptTime = Time.realtimeSinceStartup + 2f;
         _loggedFallbackActive = false;
         _loggedBadNativeOnce = false;
+        _frameCount = 0;
+        _nativeDiagnosticCounter = 0;
+        _framesSampled = 0;
+        _framesWith24Written = 0;
+        LastWrittenJointCount = 0;
+        LastNativeJointCount = 0;
+        LastFrameUsedFallback = false;
         _on = true;
-        if (!_available) Debug.LogWarning("[Body] Body tracking unavailable at start; using fallback pose estimation until it becomes available.");
+
+        if (!_available)
+            Debug.LogWarning("[Body] Body tracking unavailable at start; using synthetic 24-joint fallback.");
     }
 
     public void StopCapture()
     {
         _on = false;
         if (_activeWriter == this) _activeWriter = null;
+
 #if PICO_XR
+        try { SetWantBodyTracking(false, false); } catch { }
         if (_bodyTrackingStarted)
         {
             try { PXR_MotionTracking.StopBodyTracking(); } catch { }
             _bodyTrackingStarted = false;
         }
 #endif
+
         _w?.Flush();
         _w?.Close();
         _w?.Dispose();
@@ -77,95 +111,178 @@ public class BodyTrackingRecorder : MonoBehaviour
         Debug.Log("[Body] Capture stopped.");
     }
 
-    private int _frameCount;
-
     void Update()
     {
         if (!_on || !_ownsWriter || sensorRecorder == null || !sensorRecorder.IsRecording) return;
         if (sensorRecorder.FrameIndex == _lastFrameWritten) return;
+
         if (!_bodyTrackingStarted && Time.realtimeSinceStartup >= _nextStartAttemptTime)
         {
             TryStartBodyTracking(forceLog: false);
             _nextStartAttemptTime = Time.realtimeSinceStartup + 2f;
         }
-        if (!_available && Time.realtimeSinceStartup >= _nextProbeTime)
+
+        if (Time.realtimeSinceStartup >= _nextProbeTime)
         {
             _available = CheckAvailability();
             _nextProbeTime = Time.realtimeSinceStartup + 2f;
             if (_available) Debug.Log("[Body] Body tracking became available during recording.");
         }
-        if (!_available) return;
+
         SampleBody();
         _lastFrameWritten = sensorRecorder.FrameIndex;
         _frameCount++;
         if (_frameCount % 60 == 0) _w?.Flush();
     }
 
-    void SampleBody()
+    private void SampleBody()
     {
+        bool wrote = false;
+
 #if PICO_XR
-        try
+        if (_available)
         {
-            var getInfo = new BodyTrackingGetDataInfo { displayTime = 0 };
-            var data = new BodyTrackingData();
-            int ret = PXR_MotionTracking.GetBodyTrackingData(ref getInfo, ref data);
-            if (ret != 0 || data.roleDatas == null || data.roleDatas.Length == 0 || !LooksLikeValidNativeBodyData(data))
+            try
             {
-                if (!_loggedBadNativeOnce)
+                var getInfo = new BodyTrackingGetDataInfo { displayTime = 0 };
+                var data = new BodyTrackingData();
+                int ret = PXR_MotionTracking.GetBodyTrackingData(ref getInfo, ref data);
+                _nativeDiagnosticCounter++;
+                if (_nativeDiagnosticCounter >= 90)
                 {
-                    _loggedBadNativeOnce = true;
-                    Debug.LogWarning("[Body] Native body data invalid/empty; switching to fallback body estimation.");
+                    _nativeDiagnosticCounter = 0;
+                    LogNativeSnapshot(ret, data);
                 }
-                WriteFallbackBodyPose();
-                return;
-            }
 
-            double ts = sensorRecorder.SessionElapsed;
-            long frame = sensorRecorder.FrameIndex;
-            int n = Mathf.Min(data.roleDatas.Length, 24);
-            int wrote = 0;
-
-            for (int i = 0; i < n; i++)
-            {
-                var j = data.roleDatas[i];
-                string jn = i < BodyJointNames.Length ? BodyJointNames[i] : $"BJ{i}";
-                var p = new Vector3((float)j.localPose.PosX, (float)j.localPose.PosY, (float)j.localPose.PosZ);
-                var q = SanitizeQuaternion(new Quaternion((float)j.localPose.RotQx, (float)j.localPose.RotQy, (float)j.localPose.RotQz, (float)j.localPose.RotQw));
-                bool posOk = p.sqrMagnitude > 1e-8f;
-                bool rotOk = Mathf.Abs(q.w) + Mathf.Abs(q.x) + Mathf.Abs(q.y) + Mathf.Abs(q.z) > 1e-6f;
-                float conf = (posOk && rotOk) ? 0.85f : (posOk || rotOk ? 0.65f : 0.25f);
-                _w.WriteLine($"{ts:F6},{frame},{i},{jn},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{conf:F3}");
-                wrote++;
+                if (ret == 0 && data.roleDatas != null && data.roleDatas.Length > 0 &&
+                    LooksLikeValidNativeBodyData(data, out int validJointCount, out Vector3 span))
+                {
+                    wrote = WriteNativeWithFallbackFill(data);
+                    LastNativeJointCount = validJointCount;
+                    if (_loggedFallbackActive && LastNativeJointCount >= 20)
+                    {
+                        _loggedFallbackActive = false;
+                        Debug.Log("[Body] Native body data recovered.");
+                    }
+                }
+                else
+                {
+                    if (!_loggedBadNativeOnce)
+                    {
+                        _loggedBadNativeOnce = true;
+                        int len = data.roleDatas == null ? 0 : data.roleDatas.Length;
+                        Debug.LogWarning($"[Body] Native body data invalid. ret={ret}, joints={len}. Using synthetic fallback.");
+                    }
+                }
             }
-
-            if (wrote == 0)
+            catch (System.Exception e)
             {
-                WriteFallbackBodyPose();
+                Debug.LogWarning($"[Body] Sample error: {e.Message}");
             }
-            else if (_loggedFallbackActive)
-            {
-                _loggedFallbackActive = false;
-                Debug.Log("[Body] Native body data recovered.");
-            }
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Body] Sample error: {e.Message}");
-            WriteFallbackBodyPose();
         }
 #endif
+
+        if (!wrote)
+        {
+            WriteFallbackBodyPose();
+        }
     }
 
-    void WriteFallbackBodyPose()
+#if PICO_XR
+    private bool WriteNativeWithFallbackFill(BodyTrackingData data)
+    {
+        if (!BuildFallbackPose())
+        {
+            // If head/controller data is missing, still emit a stable 24-joint frame at origin.
+            for (int i = 0; i < 24; i++)
+            {
+                _fallbackPos[i] = Vector3.zero;
+                _fallbackRot[i] = Quaternion.identity;
+            }
+        }
+
+        for (int i = 0; i < 24; i++)
+        {
+            _framePos[i] = _fallbackPos[i];
+            _frameRot[i] = _fallbackRot[i];
+            _frameConf[i] = 0f;
+            _frameHasNative[i] = false;
+        }
+
+        int n = Mathf.Min(data.roleDatas.Length, 24);
+        for (int i = 0; i < n; i++)
+        {
+            var j = data.roleDatas[i];
+            var p = new Vector3((float)j.localPose.PosX, (float)j.localPose.PosY, (float)j.localPose.PosZ);
+            var q = SanitizeQuaternion(new Quaternion((float)j.localPose.RotQx, (float)j.localPose.RotQy, (float)j.localPose.RotQz, (float)j.localPose.RotQw));
+            bool posOk = p.sqrMagnitude > 1e-8f;
+            bool rotOk = Mathf.Abs(q.w) + Mathf.Abs(q.x) + Mathf.Abs(q.y) + Mathf.Abs(q.z) > 1e-6f;
+            if (!posOk && !rotOk) continue;
+
+            _framePos[i] = p;
+            _frameRot[i] = q;
+            _frameConf[i] = (posOk && rotOk) ? 0.85f : 0.65f;
+            _frameHasNative[i] = true;
+        }
+
+        int nativeCount = 0;
+        for (int i = 0; i < 24; i++)
+        {
+            if (_frameHasNative[i]) nativeCount++;
+        }
+
+        double ts = sensorRecorder.SessionElapsed;
+        long frame = sensorRecorder.FrameIndex;
+        for (int i = 0; i < 24; i++)
+        {
+            WriteJoint(ts, frame, i, BodyJointNames[i], _framePos[i], _frameRot[i], _frameConf[i]);
+        }
+
+        LastNativeJointCount = nativeCount;
+        LastWrittenJointCount = 24;
+        LastFrameUsedFallback = nativeCount < 24;
+        _framesSampled++;
+        _framesWith24Written++;
+
+        return true;
+    }
+#endif
+
+    private void WriteFallbackBodyPose()
     {
         if (!_loggedFallbackActive)
         {
             _loggedFallbackActive = true;
-            Debug.LogWarning("[Body] Writing fallback body pose from HMD/controllers.");
+            Debug.LogWarning("[Body] Writing synthetic 24-joint fallback body pose.");
         }
 
+        if (!BuildFallbackPose())
+        {
+            for (int i = 0; i < 24; i++)
+            {
+                _fallbackPos[i] = Vector3.zero;
+                _fallbackRot[i] = Quaternion.identity;
+            }
+        }
+
+        double ts = sensorRecorder.SessionElapsed;
+        long frame = sensorRecorder.FrameIndex;
+        for (int i = 0; i < 24; i++)
+        {
+            WriteJoint(ts, frame, i, BodyJointNames[i], _fallbackPos[i], _fallbackRot[i], 0.0f);
+        }
+
+        LastNativeJointCount = 0;
+        LastWrittenJointCount = 24;
+        LastFrameUsedFallback = true;
+        _framesSampled++;
+        _framesWith24Written++;
+    }
+
+    private bool BuildFallbackPose()
+    {
         var head = InputDevices.GetDeviceAtXRNode(XRNode.Head);
-        if (!head.isValid) return;
+        if (!head.isValid && !sensorRecorder.HasHeadPose) return false;
 
         Vector3 headPos;
         Quaternion headRot;
@@ -176,18 +293,26 @@ public class BodyTrackingRecorder : MonoBehaviour
         }
         else
         {
-            InputTrackingState headState = 0;
-            head.TryGetFeatureValue(CommonUsages.trackingState, out headState);
             headPos = Vector3.zero;
             headRot = Quaternion.identity;
-            bool headPosValid = ((headState & InputTrackingState.Position) != 0) &&
-                                head.TryGetFeatureValue(CommonUsages.devicePosition, out headPos);
-            bool headRotValid = ((headState & InputTrackingState.Rotation) != 0) &&
-                                head.TryGetFeatureValue(CommonUsages.deviceRotation, out headRot);
-            if (!headPosValid) return;
-            if (!headRotValid) headRot = Quaternion.identity;
+            if (!head.TryGetFeatureValue(CommonUsages.devicePosition, out headPos)) return false;
+            if (!head.TryGetFeatureValue(CommonUsages.deviceRotation, out headRot)) headRot = Quaternion.identity;
             headRot = SanitizeQuaternion(headRot);
         }
+
+        float headHeight = Mathf.Clamp(headPos.y, 1.1f, 2.1f);
+        float pelvisY = Mathf.Max(0.75f, headHeight - 0.88f);
+
+        Vector3 pelvis = new Vector3(headPos.x, pelvisY, headPos.z - 0.03f);
+        Vector3 neck = headPos + headRot * new Vector3(0f, -0.12f, 0.01f);
+        Vector3 spine3 = Vector3.Lerp(pelvis, neck, 0.82f);
+        Vector3 spine2 = Vector3.Lerp(pelvis, neck, 0.62f);
+        Vector3 spine1 = Vector3.Lerp(pelvis, neck, 0.38f);
+
+        Vector3 leftCollar = neck + headRot * new Vector3(-0.07f, 0.00f, 0.01f);
+        Vector3 rightCollar = neck + headRot * new Vector3(0.07f, 0.00f, 0.01f);
+        Vector3 leftShoulder = neck + headRot * new Vector3(-0.17f, -0.04f, 0.02f);
+        Vector3 rightShoulder = neck + headRot * new Vector3(0.17f, -0.04f, 0.02f);
 
         Vector3 leftWristPos = headPos + headRot * new Vector3(-0.20f, -0.35f, 0.25f);
         Vector3 rightWristPos = headPos + headRot * new Vector3(0.20f, -0.35f, 0.25f);
@@ -195,68 +320,102 @@ public class BodyTrackingRecorder : MonoBehaviour
         Quaternion rightWristRot = headRot;
 
         var left = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
-        bool leftTracked = false;
         if (left.isValid)
         {
-            InputTrackingState ls = 0;
-            left.TryGetFeatureValue(CommonUsages.trackingState, out ls);
-            if ((ls & InputTrackingState.Position) != 0) left.TryGetFeatureValue(CommonUsages.devicePosition, out leftWristPos);
-            if ((ls & InputTrackingState.Rotation) != 0 && left.TryGetFeatureValue(CommonUsages.deviceRotation, out var lq)) leftWristRot = SanitizeQuaternion(lq);
-            leftTracked = (ls & InputTrackingState.Position) != 0 && (ls & InputTrackingState.Rotation) != 0;
+            if (left.TryGetFeatureValue(CommonUsages.devicePosition, out var lp)) leftWristPos = lp;
+            if (left.TryGetFeatureValue(CommonUsages.deviceRotation, out var lq)) leftWristRot = SanitizeQuaternion(lq);
         }
 
         var right = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
-        bool rightTracked = false;
         if (right.isValid)
         {
-            InputTrackingState rs = 0;
-            right.TryGetFeatureValue(CommonUsages.trackingState, out rs);
-            if ((rs & InputTrackingState.Position) != 0) right.TryGetFeatureValue(CommonUsages.devicePosition, out rightWristPos);
-            if ((rs & InputTrackingState.Rotation) != 0 && right.TryGetFeatureValue(CommonUsages.deviceRotation, out var rq)) rightWristRot = SanitizeQuaternion(rq);
-            rightTracked = (rs & InputTrackingState.Position) != 0 && (rs & InputTrackingState.Rotation) != 0;
+            if (right.TryGetFeatureValue(CommonUsages.devicePosition, out var rp)) rightWristPos = rp;
+            if (right.TryGetFeatureValue(CommonUsages.deviceRotation, out var rq)) rightWristRot = SanitizeQuaternion(rq);
         }
 
-        Vector3 pelvisPos = headPos + headRot * new Vector3(0f, -0.55f, 0f);
-        Vector3 leftShoulderPos = headPos + headRot * new Vector3(-0.17f, -0.16f, 0.02f);
-        Vector3 rightShoulderPos = headPos + headRot * new Vector3(0.17f, -0.16f, 0.02f);
-        Vector3 leftElbowPos = Vector3.Lerp(leftShoulderPos, leftWristPos, 0.5f);
-        Vector3 rightElbowPos = Vector3.Lerp(rightShoulderPos, rightWristPos, 0.5f);
+        Vector3 leftElbow = Vector3.Lerp(leftShoulder, leftWristPos, 0.52f) + headRot * new Vector3(-0.02f, -0.01f, 0.02f);
+        Vector3 rightElbow = Vector3.Lerp(rightShoulder, rightWristPos, 0.52f) + headRot * new Vector3(0.02f, -0.01f, 0.02f);
 
-        double ts = sensorRecorder.SessionElapsed;
-        long frame = sensorRecorder.FrameIndex;
+        Vector3 leftHand = leftWristPos + leftWristRot * new Vector3(0f, 0f, 0.05f);
+        Vector3 rightHand = rightWristPos + rightWristRot * new Vector3(0f, 0f, 0.05f);
 
-        float headConf = 0.95f;
-        float shoulderConf = 0.62f;
-        float elbowConf = 0.58f;
-        float wristConfL = leftTracked ? 0.82f : 0.52f;
-        float wristConfR = rightTracked ? 0.82f : 0.52f;
-        float handConfL = leftTracked ? 0.78f : 0.48f;
-        float handConfR = rightTracked ? 0.78f : 0.48f;
-        float pelvisConf = 0.50f;
+        Vector3 leftHip = pelvis + headRot * new Vector3(-0.10f, -0.02f, 0.00f);
+        Vector3 rightHip = pelvis + headRot * new Vector3(0.10f, -0.02f, 0.00f);
+        Vector3 leftKnee = leftHip + new Vector3(0f, -0.42f, 0.04f);
+        Vector3 rightKnee = rightHip + new Vector3(0f, -0.42f, 0.04f);
+        Vector3 leftAnkle = leftKnee + new Vector3(0f, -0.42f, -0.02f);
+        Vector3 rightAnkle = rightKnee + new Vector3(0f, -0.42f, -0.02f);
+        Vector3 leftFoot = leftAnkle + headRot * new Vector3(0f, -0.05f, 0.12f);
+        Vector3 rightFoot = rightAnkle + headRot * new Vector3(0f, -0.05f, 0.12f);
 
-        WriteJoint(ts, frame, 0, "Pelvis", pelvisPos, headRot, pelvisConf);
-        WriteJoint(ts, frame, 15, "Head", headPos, headRot, headConf);
-        WriteJoint(ts, frame, 16, "LeftShoulder", leftShoulderPos, headRot, shoulderConf);
-        WriteJoint(ts, frame, 17, "RightShoulder", rightShoulderPos, headRot, shoulderConf);
-        WriteJoint(ts, frame, 18, "LeftElbow", leftElbowPos, leftWristRot, elbowConf);
-        WriteJoint(ts, frame, 19, "RightElbow", rightElbowPos, rightWristRot, elbowConf);
-        WriteJoint(ts, frame, 20, "LeftWrist", leftWristPos, leftWristRot, wristConfL);
-        WriteJoint(ts, frame, 21, "RightWrist", rightWristPos, rightWristRot, wristConfR);
-        WriteJoint(ts, frame, 22, "LeftHand", leftWristPos, leftWristRot, handConfL);
-        WriteJoint(ts, frame, 23, "RightHand", rightWristPos, rightWristRot, handConfR);
+        Quaternion torsoRot = headRot;
+
+        _fallbackPos[0] = pelvis;
+        _fallbackPos[1] = leftHip;
+        _fallbackPos[2] = rightHip;
+        _fallbackPos[3] = spine1;
+        _fallbackPos[4] = leftKnee;
+        _fallbackPos[5] = rightKnee;
+        _fallbackPos[6] = spine2;
+        _fallbackPos[7] = leftAnkle;
+        _fallbackPos[8] = rightAnkle;
+        _fallbackPos[9] = spine3;
+        _fallbackPos[10] = leftFoot;
+        _fallbackPos[11] = rightFoot;
+        _fallbackPos[12] = neck;
+        _fallbackPos[13] = leftCollar;
+        _fallbackPos[14] = rightCollar;
+        _fallbackPos[15] = headPos;
+        _fallbackPos[16] = leftShoulder;
+        _fallbackPos[17] = rightShoulder;
+        _fallbackPos[18] = leftElbow;
+        _fallbackPos[19] = rightElbow;
+        _fallbackPos[20] = leftWristPos;
+        _fallbackPos[21] = rightWristPos;
+        _fallbackPos[22] = leftHand;
+        _fallbackPos[23] = rightHand;
+
+        _fallbackRot[0] = torsoRot;
+        _fallbackRot[1] = torsoRot;
+        _fallbackRot[2] = torsoRot;
+        _fallbackRot[3] = torsoRot;
+        _fallbackRot[4] = torsoRot;
+        _fallbackRot[5] = torsoRot;
+        _fallbackRot[6] = torsoRot;
+        _fallbackRot[7] = torsoRot;
+        _fallbackRot[8] = torsoRot;
+        _fallbackRot[9] = torsoRot;
+        _fallbackRot[10] = torsoRot;
+        _fallbackRot[11] = torsoRot;
+        _fallbackRot[12] = torsoRot;
+        _fallbackRot[13] = torsoRot;
+        _fallbackRot[14] = torsoRot;
+        _fallbackRot[15] = headRot;
+        _fallbackRot[16] = torsoRot;
+        _fallbackRot[17] = torsoRot;
+        _fallbackRot[18] = leftWristRot;
+        _fallbackRot[19] = rightWristRot;
+        _fallbackRot[20] = leftWristRot;
+        _fallbackRot[21] = rightWristRot;
+        _fallbackRot[22] = leftWristRot;
+        _fallbackRot[23] = rightWristRot;
+
+        return true;
     }
 
-    void WriteJoint(double ts, long frame, int jointId, string jointName, Vector3 p, Quaternion q, float confidence)
+    private void WriteJoint(double ts, long frame, int jointId, string jointName, Vector3 p, Quaternion q, float confidence)
     {
         _w.WriteLine($"{ts:F6},{frame},{jointId},{jointName},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{confidence:F3}");
     }
 
-    bool LooksLikeValidNativeBodyData(BodyTrackingData data)
+#if PICO_XR
+    private bool LooksLikeValidNativeBodyData(BodyTrackingData data, out int validJointCount, out Vector3 span)
     {
         int n = Mathf.Min(data.roleDatas.Length, 24);
-        int validJointCount = 0;
+        validJointCount = 0;
         Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
         Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+
         for (int i = 0; i < n; i++)
         {
             var j = data.roleDatas[i];
@@ -268,12 +427,14 @@ public class BodyTrackingRecorder : MonoBehaviour
             min = Vector3.Min(min, p);
             max = Vector3.Max(max, p);
         }
-        Vector3 span = max - min;
-        bool hasSpatialSpread = span.x > 0.04f || span.y > 0.04f || span.z > 0.04f;
+
+        span = max - min;
+        bool hasSpatialSpread = span.x > 0.02f || span.y > 0.02f || span.z > 0.02f;
         return validJointCount >= 6 && hasSpatialSpread;
     }
+#endif
 
-    Quaternion SanitizeQuaternion(Quaternion q)
+    private static Quaternion SanitizeQuaternion(Quaternion q)
     {
         if (float.IsNaN(q.x) || float.IsNaN(q.y) || float.IsNaN(q.z) || float.IsNaN(q.w)) return Quaternion.identity;
         float mag = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
@@ -286,12 +447,14 @@ public class BodyTrackingRecorder : MonoBehaviour
         return q;
     }
 
-    void TryStartBodyTracking(bool forceLog)
+    private void TryStartBodyTracking(bool forceLog)
     {
 #if PICO_XR
         if (_bodyTrackingStarted) return;
         try
         {
+            SetWantBodyTracking(true, false);
+
             bool supported = false;
             int supportRet = PXR_MotionTracking.GetBodyTrackingSupported(ref supported);
             if (supportRet != 0 || !supported)
@@ -316,7 +479,30 @@ public class BodyTrackingRecorder : MonoBehaviour
 #endif
     }
 
-    bool CheckAvailability()
+    private void SetWantBodyTracking(bool enable, bool forceLog)
+    {
+#if PICO_XR
+        try
+        {
+            var mtType = typeof(PXR_MotionTracking);
+            var method = mtType.GetMethod("WantBodyTracking", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(bool) }, null);
+            if (method == null)
+            {
+                if (forceLog) Debug.Log("[Body] WantBodyTracking(bool) not available in this SDK.");
+                return;
+            }
+
+            object ret = method.Invoke(null, new object[] { enable });
+            if (forceLog) Debug.Log($"[Body] WantBodyTracking({enable}) -> {ret}");
+        }
+        catch (System.Exception e)
+        {
+            if (forceLog) Debug.LogWarning($"[Body] WantBodyTracking({enable}) failed: {e.Message}");
+        }
+#endif
+    }
+
+    private bool CheckAvailability()
     {
 #if PICO_XR
         try
@@ -324,11 +510,12 @@ public class BodyTrackingRecorder : MonoBehaviour
             bool isTracking = false;
             var state = new BodyTrackingStatus();
             int stateRet = PXR_MotionTracking.GetBodyTrackingState(ref isTracking, ref state);
-            if (stateRet == 0 && !isTracking) return false;
             var getInfo = new BodyTrackingGetDataInfo { displayTime = 0 };
             var data = new BodyTrackingData();
             int ret = PXR_MotionTracking.GetBodyTrackingData(ref getInfo, ref data);
-            return ret == 0 && data.roleDatas != null && data.roleDatas.Length > 0;
+            int len = data.roleDatas == null ? 0 : data.roleDatas.Length;
+            bool available = stateRet == 0 && isTracking && ret == 0 && len > 0;
+            return available;
         }
         catch
         {
@@ -339,5 +526,25 @@ public class BodyTrackingRecorder : MonoBehaviour
 #endif
     }
 
-    void OnDestroy() { if (_on) StopCapture(); if (_activeWriter == this) _activeWriter = null; }
+#if PICO_XR
+    private void LogNativeSnapshot(int ret, BodyTrackingData data)
+    {
+        int len = data.roleDatas == null ? 0 : data.roleDatas.Length;
+        int validCount = 0;
+        Vector3 span = Vector3.zero;
+
+        if (ret == 0 && data.roleDatas != null && data.roleDatas.Length > 0)
+        {
+            LooksLikeValidNativeBodyData(data, out validCount, out span);
+        }
+
+        Debug.Log($"[Body] Native snapshot ret={ret}, joints={len}, valid={validCount}, span=({span.x:F3},{span.y:F3},{span.z:F3})");
+    }
+#endif
+
+    void OnDestroy()
+    {
+        if (_on) StopCapture();
+        if (_activeWriter == this) _activeWriter = null;
+    }
 }

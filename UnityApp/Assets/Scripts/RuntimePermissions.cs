@@ -3,7 +3,7 @@ using UnityEngine;
 
 public class RuntimePermissions : MonoBehaviour
 {
-    private static readonly string[] RequiredPermissions =
+    public static readonly string[] RequiredPermissions =
     {
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -18,6 +18,27 @@ public class RuntimePermissions : MonoBehaviour
         "com.picoxr.permission.BODY_TRACKING",
         "com.picoxr.permission.SPATIAL_DATA"
     };
+
+    public static bool IsPermissionGranted(string permission)
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        return UnityEngine.Android.Permission.HasUserAuthorizedPermission(permission);
+#else
+        return true;
+#endif
+    }
+
+    public static bool HasAnyHandTrackingPermission()
+    {
+        return IsPermissionGranted("com.picovr.permission.HAND_TRACKING") ||
+               IsPermissionGranted("com.picoxr.permission.HAND_TRACKING");
+    }
+
+    public static bool HasAnyBodyTrackingPermission()
+    {
+        return IsPermissionGranted("com.picovr.permission.BODY_TRACKING") ||
+               IsPermissionGranted("com.picoxr.permission.BODY_TRACKING");
+    }
 
     private IEnumerator Start()
     {

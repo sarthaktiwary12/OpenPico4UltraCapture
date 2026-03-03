@@ -38,6 +38,10 @@ public class SimpleRecordingController : MonoBehaviour
     private string _directVideoPath;
     private bool _projectionStartConfirmed;
     private Coroutine _projectionStartWatchdog;
+    private bool _preflightOverrideArmed;
+    private float _preflightOverrideUntilS;
+    private bool _stallDetectedLogged;
+    private string _pendingPreflightResult;
 
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
@@ -95,14 +99,21 @@ public class SimpleRecordingController : MonoBehaviour
 
     void Update()
     {
-        CheckControllerInput();
-
-        if (_recording)
+        try
         {
-            float elapsed = Time.time - _startTime;
-            int min = (int)(elapsed / 60f);
-            int sec = (int)(elapsed % 60f);
-            SetStatus($"REC  {min:D2}:{sec:D2}\n\nFrames: {sensorRecorder.FrameIndex}");
+            CheckControllerInput();
+
+            if (_recording)
+            {
+                RenderLiveStatus();
+                RunRecordingWatchdog();
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"[Controller] Update error: {e.Message}");
+            if (_recording && sensorRecorder != null)
+                sensorRecorder.LogAction("update_exception", "recording_loop", e.GetType().Name);
         }
     }
 
@@ -153,9 +164,39 @@ public class SimpleRecordingController : MonoBehaviour
     {
         Debug.Log("[Controller] Toggle pressed!");
         if (!_recording)
+        {
+            if (!PreflightAllowsStart())
+                return;
             StartRecording();
+        }
         else
             StopRecording();
+    }
+
+    bool PreflightAllowsStart()
+    {
+        if (sensorRecorder == null) return true;
+
+        bool healthy = sensorRecorder.RunPreflightHealthCheck(out string detail);
+        if (healthy)
+        {
+            _preflightOverrideArmed = false;
+            _pendingPreflightResult = $"ok;{detail}";
+            return true;
+        }
+
+        if (_preflightOverrideArmed && Time.time <= _preflightOverrideUntilS)
+        {
+            _pendingPreflightResult = $"override;{detail}";
+            _preflightOverrideArmed = false;
+            return true;
+        }
+
+        _preflightOverrideArmed = true;
+        _preflightOverrideUntilS = Time.time + 15f;
+        Debug.LogWarning($"[Controller] Preflight blocked: {detail}");
+        SetStatus("Preflight Warning\nHand tracking or IMU quality is degraded.\nPress RECORD again within 15s to continue anyway.");
+        return false;
     }
 
     void StartRecording()
@@ -165,6 +206,14 @@ public class SimpleRecordingController : MonoBehaviour
             // Start sensor recording
             sensorRecorder.StartSession("capture", "general");
             _sessionDir = sensorRecorder.GetSessionDir();
+            if (!string.IsNullOrEmpty(_pendingPreflightResult))
+            {
+                if (_pendingPreflightResult.StartsWith("override;"))
+                    sensorRecorder.LogAction("preflight_override", "continue_anyway", _pendingPreflightResult.Substring("override;".Length));
+                else
+                    sensorRecorder.LogAction("preflight_ok", "health_check", _pendingPreflightResult);
+                _pendingPreflightResult = string.Empty;
+            }
 
             spatialMeshCapture?.StartCapture(_sessionDir);
             bodyTrackingRecorder?.StartCapture(_sessionDir);
@@ -178,11 +227,13 @@ public class SimpleRecordingController : MonoBehaviour
 
             _recording = true;
             _startTime = Time.time;
+            _stallDetectedLogged = false;
+            _preflightOverrideArmed = false;
 
             if (txtButtonLabel != null) txtButtonLabel.text = "STOP";
             if (btnImage != null) btnImage.color = new Color(0.8f, 0.2f, 0.2f, 1f);
             SetStatus("REC  00:00\n\nFrames: 0");
-            SetHudVisible(false);
+            SetHudVisible(true);
 
             Debug.Log("[Controller] RECORDING STARTED -> " + _sessionDir);
         }
@@ -211,12 +262,22 @@ public class SimpleRecordingController : MonoBehaviour
             float dur = Time.time - _startTime;
             long frames = sensorRecorder.FrameIndex;
 
+            if (dur < 10f)
+            {
+                sensorRecorder.LogAction("recording_too_short", "duration_warning", $"duration_s={dur:F2}");
+                Debug.LogWarning($"[Controller] Recording duration {dur:F2}s is below the 10s training-quality threshold.");
+            }
+
+            sensorRecorder.LogAction("quality_snapshot", "live",
+                $"hand_real_ratio={sensorRecorder.RealHandFrameRatio:F3};imu_gravity_ratio={sensorRecorder.ImuGravityFrameRatio:F3};body_joints={bodyTrackingRecorder?.LastWrittenJointCount ?? 0}");
+
             _recording = false;
 
             SetHudVisible(true);
             if (txtButtonLabel != null) txtButtonLabel.text = "SAVING...";
             if (btnImage != null) btnImage.color = new Color(0.6f, 0.6f, 0.1f, 1f);
-            SetStatus($"Saving video...\n{frames} frames, {dur:F1}s");
+            string shortWarn = dur < 10f ? "\nWARNING: recording too short for training quality" : "";
+            SetStatus($"Saving video...\n{frames} frames, {dur:F1}s{shortWarn}");
 
             // Wait a moment for video file to finalize, then find and copy it
             StartCoroutine(FindAndCopyVideo(dur, frames));
@@ -302,7 +363,7 @@ public class SimpleRecordingController : MonoBehaviour
             yield return null;
         }
 
-        sensorRecorder.LogAction("video_start", _videoBackend, "timeout_or_no_started_event");
+        sensorRecorder.LogAction("video_start_timeout", _videoBackend, "projection_not_started_within_6s");
         if (TryStartVideoShellBroadcast())
         {
             _videoBackend = "shell_broadcast";
@@ -510,7 +571,7 @@ public class SimpleRecordingController : MonoBehaviour
                     sensorRecorder.StopSession();
                     if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
                     if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
-                    SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK");
+                    SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK\n{BuildQualityFooter()}");
                     yield break;
                 }
                 yield return new WaitForSeconds(0.5f);
@@ -550,6 +611,8 @@ public class SimpleRecordingController : MonoBehaviour
             sensorRecorder?.LogAction("video_not_found", _videoBackend, "search_timeout");
             statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo: not found";
         }
+
+        statusMsg += "\n" + BuildQualityFooter();
 
         // Now that all logging is done, close the session
         sensorRecorder.StopSession();
@@ -653,6 +716,98 @@ public class SimpleRecordingController : MonoBehaviour
         }
         catch { }
 #endif
+    }
+
+    void RenderLiveStatus()
+    {
+        float elapsed = Time.time - _startTime;
+        int min = (int)(elapsed / 60f);
+        int sec = (int)(elapsed % 60f);
+        float fps = elapsed > 0.01f ? sensorRecorder.FrameIndex / elapsed : 0f;
+
+        string handStatus = sensorRecorder.LastHandTrackingReal
+            ? "<color=#53c653>REAL</color>"
+            : "<color=#ff5555>FALLBACK</color>";
+
+        string imuStatus;
+        if (sensorRecorder.LastImuAccelMagnitude < 0.05f)
+            imuStatus = "<color=#ff5555>DEAD</color>";
+        else if (sensorRecorder.LastImuHasGravity)
+            imuStatus = "<color=#53c653>RAW+GRAVITY</color>";
+        else
+            imuStatus = "<color=#f6c343>COMPENSATED</color>";
+
+        string bodyStatus = "<color=#ff5555>OFF</color>";
+        if (bodyTrackingRecorder != null)
+        {
+            if (bodyTrackingRecorder.LastWrittenJointCount >= 24 && !bodyTrackingRecorder.LastFrameUsedFallback)
+                bodyStatus = "<color=#53c653>24 joints</color>";
+            else if (bodyTrackingRecorder.LastNativeJointCount >= 10)
+                bodyStatus = "<color=#f6c343>10 joints</color>";
+            else if (bodyTrackingRecorder.LastWrittenJointCount > 0)
+                bodyStatus = "<color=#f6c343>SYNTHETIC</color>";
+        }
+
+        SetStatus(
+            $"REC  {min:D2}:{sec:D2}\n" +
+            $"Frames: {sensorRecorder.FrameIndex}  FPS: {fps:F1}/{sensorRecorder.sampleRateHz:F0}\n" +
+            $"Hands: {handStatus}  IMU: {imuStatus}  Body: {bodyStatus}");
+    }
+
+    void RunRecordingWatchdog()
+    {
+        if (sensorRecorder == null) return;
+        if (Time.realtimeSinceStartup - sensorRecorder.LastSampleRealtimeS > 2f)
+        {
+            if (!_stallDetectedLogged)
+            {
+                _stallDetectedLogged = true;
+                sensorRecorder.LogAction("stall_detected", "sampling", "no_frame_written_for_gt_2s");
+            }
+        }
+        else
+        {
+            _stallDetectedLogged = false;
+        }
+    }
+
+    void OnApplicationPause(bool pause)
+    {
+        if (_recording && sensorRecorder != null)
+            sensorRecorder.LogAction(pause ? "app_pause" : "app_resume", "lifecycle", pause ? "true" : "false");
+    }
+
+    void OnApplicationFocus(bool focus)
+    {
+        if (_recording && sensorRecorder != null)
+            sensorRecorder.LogAction(focus ? "app_focus" : "app_unfocus", "lifecycle", focus ? "true" : "false");
+    }
+
+    void OnApplicationQuit()
+    {
+        if (!_recording || sensorRecorder == null) return;
+
+        try
+        {
+            StopVideoRecording();
+            bodyTrackingRecorder?.StopCapture();
+            spatialMeshCapture?.StopCapture();
+            sensorRecorder.StopSession("session_end_crash", "reason=application_quit");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Controller] Quit cleanup failed: {e.Message}");
+        }
+    }
+
+    string BuildQualityFooter()
+    {
+        if (sensorRecorder == null) return "Quality: unavailable";
+
+        float handPct = sensorRecorder.RealHandFrameRatio * 100f;
+        float imuPct = sensorRecorder.ImuGravityFrameRatio * 100f;
+        string body = bodyTrackingRecorder != null ? bodyTrackingRecorder.LastWrittenJointCount.ToString() : "0";
+        return $"Quality H={handPct:F0}% IMU={imuPct:F0}% Body={body}";
     }
 
     void SetIdle()

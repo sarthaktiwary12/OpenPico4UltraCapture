@@ -1,0 +1,46 @@
+{
+  "session_id": "20260302_150155_capture",
+  "task_type": "capture", "scenario_category": "general",
+  "capture_start_utc": "2026-03-02T15:01:55.1624650Z",
+  "capture_start_unix_s": 1772463715.159, "sample_rate_hz": 60,
+  "device": { "model": "Pico A92Y0", "os": "Android OS 14 / API-34 (UKQ1.240321.001/20)" },
+  "coordinate_system": {
+    "convention": "Unity left-handed Y-up", "units": "meters",
+    "rotation_format": "quaternion (x,y,z,w)", "origin": "XR tracking origin (floor)",
+    "axes": { "x": "right", "y": "up", "z": "forward" }
+  },
+  "camera_intrinsics": {
+    "note": "PICO 4 Ultra: 2x32MP stereo RGB. Spatial video output 2048x1536@60fps.",
+    "sensor_resolution": [3264, 2448], "output_resolution": [2048, 1536],
+    "stereo_baseline_mm": 64, "hfov_deg_approx": 100,
+    "approx_fx": 860, "approx_fy": 860, "approx_cx": 1024, "approx_cy": 768,
+    "calibration_note": "Run checkerboard calibration for precise fx/fy/cx/cy per device."
+  },
+  "extrinsics": {
+    "note": "Cameras rigidly mounted on HMD. Extrinsics = fixed offset from HMD tracking center.",
+    "reference": "HMD tracking origin"
+  },
+  "depth_sensor": { "type": "iToF", "fov_deg": 60, "range_m": 3.0, "access": "spatial_mesh" },
+  "hand_tracking": { "joints_per_hand": 26, "model": "OpenXR XR_EXT_hand_tracking",
+    "per_joint": ["position_xyz_m", "orientation_quat", "radius_m"],
+    "joint_names": ["Palm","Wrist","ThumbMeta","ThumbProx","ThumbDist","ThumbTip","IndexMeta","IndexProx","IndexInter","IndexDist","IndexTip","MiddleMeta","MiddleProx","MiddleInter","MiddleDist","MiddleTip","RingMeta","RingProx","RingInter","RingDist","RingTip","LittleMeta","LittleProx","LittleInter","LittleDist","LittleTip"]
+  },
+  "body_tracking": {
+    "joints": 24, "model": "PICO BodyTrackerResult",
+    "per_joint": ["position_xyz_m", "orientation_quat", "confidence"],
+    "joint_names": ["Pelvis","LeftHip","RightHip","Spine1",
+      "LeftKnee","RightKnee","Spine2",
+      "LeftAnkle","RightAnkle","Spine3",
+      "LeftFoot","RightFoot","Neck",
+      "LeftCollar","RightCollar","Head",
+      "LeftShoulder","RightShoulder","LeftElbow","RightElbow",
+      "LeftWrist","RightWrist","LeftHand","RightHand"],
+    "output_file": "body_pose.csv"
+  },
+  "imu": { "location": "HMD", "accel_unit": "m/s^2", "gyro_unit": "rad/s", "source": "auto_multi_source" },
+  "sync": {
+    "method": "clap_gesture + audio_beep + wallclock",
+    "sensor_epoch_realtime": 17.727795, "sensor_epoch_unix_s": 1772463715.159,
+    "note": "Find sync_clap events in action_log.csv. Audio beep in video for alignment."
+  }
+}

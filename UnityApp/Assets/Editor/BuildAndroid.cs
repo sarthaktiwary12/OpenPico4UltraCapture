@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -8,6 +9,8 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using UnityEngine.XR.OpenXR;
+using UnityEngine.XR.OpenXR.Features;
 
 public static class BuildAndroid
 {
@@ -30,6 +33,7 @@ public static class BuildAndroid
         EnsurePicoLoaderConfigured();
         EnsureOpenXRSettingsLoaded();
         EnsurePicoOpenXRFeatureSetEnabled();
+        EnsureSinglePicoTouchInteractionProfile();
         EnsurePicoPlatformAppIdConfigured();
 
         PlayerSettings.companyName = "SentientX";
@@ -361,6 +365,77 @@ public static class BuildAndroid
         {
             Debug.LogWarning("[Build] PICO OpenXR feature set not found. Passthrough may remain unavailable.");
         }
+    }
+
+    private static void EnsureSinglePicoTouchInteractionProfile()
+    {
+        var settings = OpenXRSettings.GetSettingsForBuildTargetGroup(BuildTargetGroup.Android);
+        if (settings == null)
+        {
+            Debug.LogWarning("[Build] OpenXR Android settings not found; cannot enforce interaction profiles.");
+            return;
+        }
+
+        var allowedInteractionTypes = new[]
+        {
+            "PICONeo3ControllerProfile",
+            "PICO4UltraControllerProfile",
+            "PICO4ControllerProfile",
+            "PICOG3ControllerProfile",
+            "EyeGazeInteraction",
+            "HandInteractionProfile",
+            "PalmPoseInteraction"
+        };
+
+        var interactionFeatures = settings.GetFeatures(typeof(OpenXRInteractionFeature));
+        if (interactionFeatures == null || interactionFeatures.Length == 0)
+        {
+            Debug.LogWarning("[Build] No OpenXR interaction features found on Android settings.");
+            return;
+        }
+
+        OpenXRFeature preferredController = null;
+        bool hasEnabledAllowedInteraction = false;
+        bool changed = false;
+        foreach (var feature in interactionFeatures)
+        {
+            if (feature == null) continue;
+            var typeName = feature.GetType().Name;
+            var isAllowed = allowedInteractionTypes.Contains(typeName);
+            if (typeName == "PICO4ControllerProfile")
+                preferredController = feature;
+
+            if (!isAllowed && feature.enabled)
+            {
+                feature.enabled = false;
+                changed = true;
+                Debug.Log($"[Build] OpenXR interaction disabled: {typeName}");
+            }
+            else if (isAllowed && feature.enabled)
+            {
+                hasEnabledAllowedInteraction = true;
+            }
+        }
+
+        if (!hasEnabledAllowedInteraction && preferredController != null)
+        {
+            preferredController.enabled = true;
+            changed = true;
+            Debug.Log("[Build] Enabled OpenXR interaction: PICO4ControllerProfile");
+        }
+
+        if (changed)
+        {
+            EditorUtility.SetDirty(settings);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            Debug.Log("[Build] Enforced PICO-only OpenXR interaction profile set for validation.");
+        }
+
+        var enabledInteractions = settings.GetFeatures(typeof(OpenXRInteractionFeature))
+            .Where(f => f != null && f.enabled)
+            .Select(f => f.GetType().Name);
+        Debug.Log("[Build] Enabled OpenXR interactions: " + string.Join(", ", enabledInteractions));
     }
 
     private static void EnsurePicoLoaderConfigured()

@@ -1,0 +1,149 @@
+{
+  "session": "20260302_150155_capture",
+  "summary": {
+    "session_id": "20260302_150155_capture",
+    "task_type": "capture",
+    "scenario_category": "general",
+    "total_frames": 1668,
+    "duration_s": 39.296,
+    "actual_fps": 42.45,
+    "target_fps": 60,
+    "start_unix_s": 1772463715.159,
+    "end_unix_s": 1772463754.473
+  },
+  "counts": {
+    "imu": 1668,
+    "head": 1668,
+    "hand": 86736,
+    "body": 16680,
+    "depth_mesh_index": 77,
+    "actions": 13
+  },
+  "checks": [
+    {
+      "name": "imu.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=1668"
+    },
+    {
+      "name": "head.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=1668"
+    },
+    {
+      "name": "hand.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=86736"
+    },
+    {
+      "name": "body.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=16680"
+    },
+    {
+      "name": "depth.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=77"
+    },
+    {
+      "name": "actions.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=13"
+    },
+    {
+      "name": "imu.frame_gaps",
+      "status": "pass",
+      "detail": "missing_frames=0, frame_min=0, frame_max=1667"
+    },
+    {
+      "name": "head.frame_gaps",
+      "status": "pass",
+      "detail": "missing_frames=0, frame_min=0, frame_max=1667"
+    },
+    {
+      "name": "body.frame_gaps",
+      "status": "pass",
+      "detail": "missing_frames=0, frame_min=1, frame_max=1668"
+    },
+    {
+      "name": "imu.acceleration_nonzero",
+      "status": "pass",
+      "detail": "nonzero_accel_rows=1667/1668"
+    },
+    {
+      "name": "imu.gyro_signal_present",
+      "status": "pass",
+      "detail": "gyro_mag_min=0.0031, max=3.3291"
+    },
+    {
+      "name": "head.quaternion_norm",
+      "status": "pass",
+      "detail": "max_abs_deviation=0.000001"
+    },
+    {
+      "name": "head.tracking_state",
+      "status": "pass",
+      "detail": "counts={15: 1668}"
+    },
+    {
+      "name": "hand.joint_completeness",
+      "status": "pass",
+      "detail": "joints=26"
+    },
+    {
+      "name": "hand.left_right_presence",
+      "status": "pass",
+      "detail": "hands=['left', 'right']"
+    },
+    {
+      "name": "body.joint_count",
+      "status": "pass",
+      "detail": "joints=10 ['Head', 'LeftElbow', 'LeftHand', 'LeftShoulder', 'LeftWrist', 'Pelvis', 'RightElbow', 'RightHand', 'RightShoulder', 'RightWrist']"
+    },
+    {
+      "name": "body.mean_confidence",
+      "status": "pass",
+      "detail": "mean_confidence=0.705, min=0.480, max=0.950"
+    },
+    {
+      "name": "depth.files_exist",
+      "status": "pass",
+      "detail": "existing=77/77"
+    },
+    {
+      "name": "depth.geometry_nontrivial",
+      "status": "pass",
+      "detail": "verts_range=[4031,4367], tris_range=[3354,3681]"
+    },
+    {
+      "name": "video.file_nonzero",
+      "status": "pass",
+      "detail": "size=91696535"
+    },
+    {
+      "name": "video.resolution",
+      "status": "pass",
+      "detail": "1920x1080"
+    },
+    {
+      "name": "video.bitrate",
+      "status": "pass",
+      "detail": "bitrate=20095442"
+    },
+    {
+      "name": "video.duration_alignment",
+      "status": "pass",
+      "detail": "expected=36.492, actual=36.498, delta=0.006"
+    },
+    {
+      "name": "events.video_start_ok",
+      "status": "pass",
+      "detail": "present=True"
+    },
+    {
+      "name": "events.video_saved",
+      "status": "pass",
+      "detail": "present=True"
+    }
+  ]
+}

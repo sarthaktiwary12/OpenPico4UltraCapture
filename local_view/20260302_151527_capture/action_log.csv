@@ -1,0 +1,6 @@
+ts_s,frame,event_type,action_type,metadata
+53.873941,0,session_start,capture,scenario=general
+53.873941,0,task_start,capture,user_initiated
+53.873941,0,video_start,android_projection,pending
+0.034374,0,hand_fallback,controller_skeleton,xr_hand_data_unavailable
+0.034374,1,mesh_provider_start,spatial_anchor,ok

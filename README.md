@@ -11,7 +11,7 @@ Every TELUS requirement mapped to how this pipeline delivers it:
 | **Head pose** | XR InputDevice tracking, 60Hz | `head_pose.csv` |
 | **Hand joint positions** | PXR_HandTracking: 26 joints/hand, position+rotation+radius | `hand_joints.csv` |
 | **Finger articulations** | Quaternion rotation per finger joint | `hand_joints.csv` (rot columns) |
-| **Accelerometer** | Android SensorManager native (or Unity fallback) | `imu.csv` (accel columns) |
+| **Accelerometer** | Android SensorManager native (or Unity fallback) | `imu.csv` (accel + gravity columns) |
 | **Gyroscope** | Android SensorManager native (or Unity fallback) | `imu.csv` (gyro columns) |
 | **Task start / Task end** | Operator-triggered via in-VR UI | `action_log.csv` |
 | **Action type** | Selected from TELUS task list before recording | `action_log.csv` |
@@ -138,6 +138,7 @@ sudo apt install ffmpeg  # or brew install ffmpeg
 5. TAP "Start Session"
    → Sensor recording begins
    → Status shows "RECORDING"
+   → Preflight health check runs (hand tracking + IMU gravity); if degraded, warning shown before continue
 
 6. CLAP HANDS TOGETHER (sync gesture)
    → App detects clap, plays audio beep
@@ -220,10 +221,10 @@ Each session delivers:
 ├── video_blurred.mp4           ← Egocentric stereo RGB, faces blurred
 ├── hand_joints.csv             ← 26 joints × 2 hands × N frames
 ├── head_pose.csv               ← 6DoF head pose per frame
-├── imu.csv                     ← Accelerometer + gyroscope per frame
-├── action_log.csv              ← task_start, task_end, action_type, sync events
+├── imu.csv                     ← Accelerometer + gyroscope + gravity per frame
+├── action_log.csv              ← task events, sync events, quality/fallback diagnostics
 ├── calibration.json            ← Camera intrinsics, extrinsics, coordinate system
-├── session_summary.json        ← Duration, fps, frame count
+├── session_summary.json        ← Duration, fps, frame count, quality ratios
 ├── sync_metadata.json          ← Video↔sensor alignment parameters
 ├── validation_report.json      ← QA checklist results
 └── depth_mesh/                 ← Depth proxy from iToF spatial mesh
@@ -252,14 +253,20 @@ ts_s, frame, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, rot_w, tracking_state
 
 **imu.csv**:
 ```
-ts_s, frame, accel_x, accel_y, accel_z (m/s²), gyro_x, gyro_y, gyro_z (rad/s)
+ts_s, frame,
+accel_x, accel_y, accel_z (m/s²),
+gyro_x, gyro_y, gyro_z (rad/s),
+grav_x, grav_y, grav_z (m/s²)
 ```
 
 **action_log.csv**:
 ```
 ts_s, frame, event_type, action_type, metadata
 ```
-Events: session_start, session_end, task_start, task_end, sync_clap, sync_manual
+Events: session_start, session_end, session_end_crash, task_start, task_end, sync_clap, sync_manual
+Additional diagnostic events may appear during degraded capture conditions:
+`hand_fallback`, `hand_tracking_recovered`, `imu_fallback`, `imu_no_gravity_detected`,
+`video_start_timeout`, `stall_detected`, `recording_too_short`, lifecycle events.
 
 ---
 

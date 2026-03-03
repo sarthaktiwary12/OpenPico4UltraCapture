@@ -1,0 +1,7 @@
+{
+  "session_id": "20260302_150155_capture", "task_type": "capture",
+  "scenario_category": "general",
+  "total_frames": 1668, "duration_s": 39.296,
+  "actual_fps": 42.45, "target_fps": 60,
+  "start_unix_s": 1772463715.159, "end_unix_s": 1772463754.473
+}

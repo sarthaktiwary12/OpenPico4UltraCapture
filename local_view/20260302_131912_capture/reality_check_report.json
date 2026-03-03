@@ -1,0 +1,149 @@
+{
+  "session": "20260302_131912_capture",
+  "summary": {
+    "session_id": "20260302_131912_capture",
+    "task_type": "capture",
+    "scenario_category": "general",
+    "total_frames": 757,
+    "duration_s": 17.583,
+    "actual_fps": 43.05,
+    "target_fps": 60,
+    "start_unix_s": 1772457552.651,
+    "end_unix_s": 1772457570.252
+  },
+  "counts": {
+    "imu": 757,
+    "head": 757,
+    "hand": 1514,
+    "body": 7570,
+    "depth_mesh_index": 33,
+    "actions": 12
+  },
+  "checks": [
+    {
+      "name": "imu.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=757"
+    },
+    {
+      "name": "head.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=757"
+    },
+    {
+      "name": "hand.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=1514"
+    },
+    {
+      "name": "body.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=7570"
+    },
+    {
+      "name": "depth.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=33"
+    },
+    {
+      "name": "actions.timestamp_monotonic",
+      "status": "pass",
+      "detail": "violations=0, rows=12"
+    },
+    {
+      "name": "imu.frame_gaps",
+      "status": "pass",
+      "detail": "missing_frames=0, frame_min=0, frame_max=756"
+    },
+    {
+      "name": "head.frame_gaps",
+      "status": "pass",
+      "detail": "missing_frames=0, frame_min=0, frame_max=756"
+    },
+    {
+      "name": "body.frame_gaps",
+      "status": "pass",
+      "detail": "missing_frames=0, frame_min=1, frame_max=757"
+    },
+    {
+      "name": "imu.acceleration_nonzero",
+      "status": "fail",
+      "detail": "all_or_most_accel_zero=757/757"
+    },
+    {
+      "name": "imu.gyro_signal_present",
+      "status": "pass",
+      "detail": "gyro_mag_min=0.0089, max=3.2894"
+    },
+    {
+      "name": "head.quaternion_norm",
+      "status": "pass",
+      "detail": "max_abs_deviation=0.000001"
+    },
+    {
+      "name": "head.tracking_state",
+      "status": "pass",
+      "detail": "counts={15: 757}"
+    },
+    {
+      "name": "hand.joint_completeness",
+      "status": "fail",
+      "detail": "only WristFallback present (no finger joints)"
+    },
+    {
+      "name": "hand.left_right_presence",
+      "status": "pass",
+      "detail": "hands=['left', 'right']"
+    },
+    {
+      "name": "body.joint_count",
+      "status": "pass",
+      "detail": "joints=10 ['Head', 'LeftElbow', 'LeftHand', 'LeftShoulder', 'LeftWrist', 'Pelvis', 'RightElbow', 'RightHand', 'RightShoulder', 'RightWrist']"
+    },
+    {
+      "name": "body.mean_confidence",
+      "status": "warn",
+      "detail": "mean_confidence=0.230, min=0.200, max=0.350"
+    },
+    {
+      "name": "depth.files_exist",
+      "status": "pass",
+      "detail": "existing=33/33"
+    },
+    {
+      "name": "depth.geometry_nontrivial",
+      "status": "pass",
+      "detail": "verts_range=[3215,3485], tris_range=[2660,2904]"
+    },
+    {
+      "name": "video.file_nonzero",
+      "status": "pass",
+      "detail": "size=39905930"
+    },
+    {
+      "name": "video.resolution",
+      "status": "pass",
+      "detail": "1920x1080"
+    },
+    {
+      "name": "video.bitrate",
+      "status": "pass",
+      "detail": "bitrate=20864245"
+    },
+    {
+      "name": "video.duration_alignment",
+      "status": "pass",
+      "detail": "expected=15.338, actual=15.298, delta=-0.040"
+    },
+    {
+      "name": "events.video_start_ok",
+      "status": "pass",
+      "detail": "present=True"
+    },
+    {
+      "name": "events.video_saved",
+      "status": "pass",
+      "detail": "present=True"
+    }
+  ]
+}

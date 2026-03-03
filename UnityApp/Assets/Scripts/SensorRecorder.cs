@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using UnityEngine;
 using UnityEngine.XR;
+using UnityEngine.XR.Hands;
 #if PICO_XR
 using Unity.XR.PXR;
 #endif
@@ -19,9 +20,20 @@ public class SensorRecorder : MonoBehaviour
     public string SessionId { get; private set; }
     public long FrameIndex { get; private set; }
     public double SessionElapsed => _elapsed;
+    public float LastSampleRealtimeS { get; private set; }
     public bool HasHeadPose { get; private set; }
     public Vector3 LastHeadPosition { get; private set; }
     public Quaternion LastHeadRotation { get; private set; } = Quaternion.identity;
+    public bool LastHandTrackingReal { get; private set; }
+    public bool LastHandTrackingFallback => !LastHandTrackingReal;
+    public int LastRealHandJointCount { get; private set; }
+    public float LastHandRotationVariance { get; private set; }
+    public float LastImuAccelMagnitude { get; private set; }
+    public bool LastImuHasGravity { get; private set; }
+    public bool LastImuFallbackUsed { get; private set; }
+    public Vector3 LastImuGravity { get; private set; }
+    public float RealHandFrameRatio => _sampleCount > 0 ? (float)_realHandFrameCount / _sampleCount : 0f;
+    public float ImuGravityFrameRatio => _sampleCount > 0 ? (float)_imuGravityFrameCount / _sampleCount : 0f;
 
     private string _sessionDir;
     private double _startRealtime, _startWallclock, _elapsed;
@@ -39,8 +51,15 @@ public class SensorRecorder : MonoBehaviour
     private bool _hasPrevDerivedHeadVel;
     private Vector3 _prevDerivedHeadVel;
     private double _prevHeadPosTs;
+    private bool _loggedImuNoGravity;
+    private long _sampleCount;
+    private long _realHandFrameCount;
+    private long _imuGravityFrameCount;
+    private long _handFallbackFrameCount;
+    private long _imuFallbackFrameCount;
     private readonly List<InputDevice> _tmpDevices = new List<InputDevice>(4);
     private readonly List<Bone> _tmpBones = new List<Bone>(8);
+    private readonly List<XRHandSubsystem> _tmpHandSubsystems = new List<XRHandSubsystem>(4);
 
     static readonly string[] JN = {
         "Palm","Wrist","ThumbMeta","ThumbProx","ThumbDist","ThumbTip",
@@ -50,6 +69,22 @@ public class SensorRecorder : MonoBehaviour
         "LittleMeta","LittleProx","LittleInter","LittleDist","LittleTip"
     };
 
+    struct HandSampleStats
+    {
+        public bool wroteAny;
+        public bool usedRealTracking;
+        public int realJointCount;
+        public int rotCount;
+        public float sumX;
+        public float sumY;
+        public float sumZ;
+        public float sumW;
+        public float sumSqX;
+        public float sumSqY;
+        public float sumSqZ;
+        public float sumSqW;
+    }
+
     void Awake() => _sampleInterval = 1f / sampleRateHz;
 
     void Update()
@@ -58,8 +93,12 @@ public class SensorRecorder : MonoBehaviour
         float now = Time.realtimeSinceStartup;
         if (now - _lastSample < _sampleInterval) return;
         _lastSample = now;
+        LastSampleRealtimeS = now;
         _elapsed = Time.realtimeSinceStartupAsDouble - _startRealtime;
-        SampleHeadPose(); SampleHands(); SampleIMU();
+        SampleHeadPose();
+        SampleHands();
+        SampleIMU();
+        _sampleCount++;
         FrameIndex++;
         // Flush every 60 frames to prevent data loss on crash/kill
         if (FrameIndex % 60 == 0) { _headW?.Flush(); _handW?.Flush(); _imuW?.Flush(); }
@@ -77,7 +116,7 @@ public class SensorRecorder : MonoBehaviour
 
         _headW = W("head_pose.csv", "ts_s,frame,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,tracking_state");
         _handW = W("hand_joints.csv", "ts_s,frame,hand,joint_id,joint_name,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,radius");
-        _imuW = W("imu.csv", "ts_s,frame,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z");
+        _imuW = W("imu.csv", "ts_s,frame,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,grav_x,grav_y,grav_z");
         _actionW = W("action_log.csv", "ts_s,frame,event_type,action_type,metadata");
 
         _startRealtime = Time.realtimeSinceStartupAsDouble;
@@ -86,20 +125,38 @@ public class SensorRecorder : MonoBehaviour
         _nativeImu = NativeIMUBridge.Instance != null && NativeIMUBridge.Instance.IsActive;
         if (SystemInfo.supportsGyroscope) Input.gyro.enabled = true;
         _loggedHandFallback = false;
+        _loggedImuFallback = false;
+        _loggedImuNoGravity = false;
         _hasPrevHeadVel = false;
         _hasPrevHeadPos = false;
         _hasPrevDerivedHeadVel = false;
+        LastHandTrackingReal = false;
+        LastRealHandJointCount = 0;
+        LastHandRotationVariance = 0f;
+        LastImuAccelMagnitude = 0f;
+        LastImuHasGravity = false;
+        LastImuFallbackUsed = false;
+        LastImuGravity = Vector3.zero;
+        _sampleCount = 0;
+        _realHandFrameCount = 0;
+        _imuGravityFrameCount = 0;
+        _handFallbackFrameCount = 0;
+        _imuFallbackFrameCount = 0;
         FrameIndex = 0; _lastSample = Time.realtimeSinceStartup;
         IsRecording = true;
+        LogPermissionSnapshot();
+        LogHandTrackingAvailability();
         WriteCalibration(); LogAction("session_start", task, $"scenario={scenario}");
         Debug.Log($"[Rec] Started: {SessionId} → {_sessionDir}");
         return SessionId;
     }
 
-    public void StopSession()
+    public void StopSession(string endEventType = "session_end", string endMetadata = "")
     {
         if (!IsRecording) return; IsRecording = false;
-        LogAction("session_end", taskType, $"frames={FrameIndex}");
+        if (string.IsNullOrEmpty(endMetadata))
+            endMetadata = $"frames={FrameIndex}";
+        LogAction(endEventType, taskType, endMetadata);
         Close(ref _headW); Close(ref _handW); Close(ref _imuW); Close(ref _actionW);
         WriteSummary();
         Debug.Log($"[Rec] Stopped: {FrameIndex} frames, {_elapsed:F1}s");
@@ -131,19 +188,49 @@ public class SensorRecorder : MonoBehaviour
 
     void SampleHands()
     {
-        SampleHand("left");
-        SampleHand("right");
+        var left = SampleHand("left");
+        var right = SampleHand("right");
+
+        int realJointCount = left.realJointCount + right.realJointCount;
+        int trackedHands = (left.usedRealTracking ? 1 : 0) + (right.usedRealTracking ? 1 : 0);
+
+        float rotVar = 0f;
+        int rotVarCount = 0;
+        if (left.rotCount > 0) { rotVar += ComputeRotationVariance(left); rotVarCount++; }
+        if (right.rotCount > 0) { rotVar += ComputeRotationVariance(right); rotVarCount++; }
+        LastHandRotationVariance = rotVarCount > 0 ? rotVar / rotVarCount : 0f;
+        LastRealHandJointCount = realJointCount;
+        LastHandTrackingReal = trackedHands == 2 && realJointCount >= 40 && LastHandRotationVariance > 0.0005f;
+
+        if (LastHandTrackingReal)
+        {
+            _realHandFrameCount++;
+            if (_loggedHandFallback)
+            {
+                _loggedHandFallback = false;
+                LogAction("hand_tracking_recovered", "both_hands", $"real_joint_count={realJointCount}");
+            }
+        }
+        else
+        {
+            _handFallbackFrameCount++;
+            if (!_loggedHandFallback)
+            {
+                _loggedHandFallback = true;
+                LogAction("hand_fallback", "controller_skeleton", $"real_joint_count={realJointCount};rot_var={LastHandRotationVariance:F6}");
+            }
+        }
     }
 
-    void SampleHand(string label)
+    HandSampleStats SampleHand(string label)
     {
-        bool wroteAny = false;
-#if PICO_XR && !PICO_OPENXR_SDK
+        var stats = new HandSampleStats();
+#if PICO_XR
         try
         {
             var ht = label == "left" ? HandType.HandLeft : HandType.HandRight;
             var jl = new HandJointLocations();
-            if (PXR_HandTracking.GetJointLocations(ht, ref jl) && jl.jointLocations != null)
+            if (PXR_Plugin.HandTracking.UPxr_GetHandTrackerJointLocations(ht, ref jl) && jl.jointLocations != null)
             {
                 int n = Mathf.Min(jl.jointLocations.Length, 26);
                 for (int i = 0; i < n; i++)
@@ -154,8 +241,7 @@ public class SensorRecorder : MonoBehaviour
                     var p = j.pose.Position.ToVector3();
                     var q = j.pose.Orientation.ToQuat();
                     string jn = i < JN.Length ? JN[i] : $"J{i}";
-                    _handW.WriteLine($"{_elapsed:F6},{FrameIndex},{label},{i},{jn},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{j.radius:F4}");
-                    wroteAny = true;
+                    WriteHandJoint(label, i, jn, p, q, j.radius, true, ref stats);
                 }
             }
         }
@@ -163,17 +249,12 @@ public class SensorRecorder : MonoBehaviour
         {
         }
 #endif
-        if (!wroteAny)
+        if (!stats.wroteAny)
         {
-            wroteAny = TrySampleXRHand(label);
-            if (wroteAny && _loggedHandFallback)
-            {
-                _loggedHandFallback = false;
-                LogAction("hand_tracking_recovered", label, "xr_hand_data_available");
-            }
+            stats = TrySampleXRHand(label);
         }
 
-        if (wroteAny) return;
+        if (stats.wroteAny) return stats;
 
         // Fallback: synthesize a full hand skeleton from controller pose so the stream keeps schema consistency.
         Vector3 cp = Vector3.zero;
@@ -185,30 +266,32 @@ public class SensorRecorder : MonoBehaviour
                                  dev.TryGetFeatureValue(CommonUsages.deviceRotation, out cq);
         if (!hasControllerPose)
         {
-            if (!HasHeadPose) return;
+            if (!HasHeadPose) return stats;
             cp = LastHeadPosition + LastHeadRotation * (label == "left"
                 ? new Vector3(-0.20f, -0.35f, 0.25f)
                 : new Vector3(0.20f, -0.35f, 0.25f));
             cq = LastHeadRotation;
         }
         WriteControllerHandSkeletonFallback(label, cp, cq);
-        if (!_loggedHandFallback)
-        {
-            _loggedHandFallback = true;
-            LogAction("hand_fallback", "controller_skeleton", "xr_hand_data_unavailable");
-        }
+        stats.wroteAny = true;
+        stats.usedRealTracking = false;
+        return stats;
     }
 
     void SampleIMU()
     {
-        Vector3 a, g;
+        Vector3 a;
+        Vector3 g;
+        Vector3 grav = Vector3.zero;
         bool loggedFallback = false;
+        bool usedNative = false;
         var native = NativeIMUBridge.Instance;
-        bool useNative = native != null && native.IsActive && native.HasFreshData;
-        if (useNative)
+        if (native != null && native.IsActive && native.HasFreshData)
         {
             a = native.Acceleration;
             g = native.AngularVelocity;
+            grav = native.Gravity;
+            usedNative = true;
             _nativeImu = true;
 
             bool nativeAccelValid = a.sqrMagnitude > 1e-8f;
@@ -242,6 +325,9 @@ public class SensorRecorder : MonoBehaviour
                 if (ug.sqrMagnitude > 1e-8f) g = ug;
                 loggedFallback = true;
             }
+
+            if (grav.sqrMagnitude < 1e-8f && native.HasGravityData)
+                grav = native.Gravity;
         }
         else if (TryGetHeadKinematics(out a, out g))
         {
@@ -256,12 +342,33 @@ public class SensorRecorder : MonoBehaviour
             loggedFallback = true;
         }
 
+        if (grav.sqrMagnitude < 1e-8f && Input.gyro.enabled)
+        {
+            Vector3 inferredGravity = Input.acceleration - Input.gyro.userAcceleration;
+            if (inferredGravity.sqrMagnitude > 1e-8f)
+                grav = inferredGravity;
+        }
+
+        LastImuAccelMagnitude = a.magnitude;
+        LastImuHasGravity = grav.sqrMagnitude > 1f || LastImuAccelMagnitude >= 8f;
+        LastImuFallbackUsed = loggedFallback;
+        LastImuGravity = grav;
+        if (LastImuHasGravity) _imuGravityFrameCount++;
+        if (loggedFallback) _imuFallbackFrameCount++;
+
         if (loggedFallback && !_loggedImuFallback)
         {
             LogAction("imu_fallback", "xr_head_kinematics", "native_or_gyro_unavailable");
             _loggedImuFallback = true;
         }
-        _imuW.WriteLine($"{_elapsed:F6},{FrameIndex},{a.x:F6},{a.y:F6},{a.z:F6},{g.x:F6},{g.y:F6},{g.z:F6}");
+
+        if (usedNative && !LastImuHasGravity && !_loggedImuNoGravity)
+        {
+            _loggedImuNoGravity = true;
+            LogAction("imu_no_gravity_detected", "native", $"accel_mag={LastImuAccelMagnitude:F3}");
+        }
+
+        _imuW.WriteLine($"{_elapsed:F6},{FrameIndex},{a.x:F6},{a.y:F6},{a.z:F6},{g.x:F6},{g.y:F6},{g.z:F6},{grav.x:F6},{grav.y:F6},{grav.z:F6}");
     }
 
     bool TryGetHeadKinematics(out Vector3 accel, out Vector3 gyro)
@@ -360,48 +467,45 @@ public class SensorRecorder : MonoBehaviour
         return hasA || hasG;
     }
 
-    bool TrySampleXRHand(string label)
+    HandSampleStats TrySampleXRHand(string label)
     {
+        var stats = new HandSampleStats();
         var handChar = label == "left"
             ? InputDeviceCharacteristics.HandTracking | InputDeviceCharacteristics.Left | InputDeviceCharacteristics.TrackedDevice
             : InputDeviceCharacteristics.HandTracking | InputDeviceCharacteristics.Right | InputDeviceCharacteristics.TrackedDevice;
 
         _tmpDevices.Clear();
         InputDevices.GetDevicesWithCharacteristics(handChar, _tmpDevices);
-        if (_tmpDevices.Count == 0) return false;
+        if (_tmpDevices.Count == 0) return stats;
 
         var dev = _tmpDevices[0];
-        if (!dev.isValid) return false;
-        if (!dev.TryGetFeatureValue(CommonUsages.handData, out Hand handData)) return false;
-
-        bool wroteAny = false;
+        if (!dev.isValid) return stats;
+        if (!dev.TryGetFeatureValue(CommonUsages.handData, out Hand handData)) return stats;
 
         if (handData.TryGetRootBone(out Bone root))
         {
             if (root.TryGetPosition(out Vector3 rp) && root.TryGetRotation(out Quaternion rq))
             {
-                _handW.WriteLine($"{_elapsed:F6},{FrameIndex},{label},1,Wrist,{rp.x:F6},{rp.y:F6},{rp.z:F6},{rq.x:F6},{rq.y:F6},{rq.z:F6},{rq.w:F6},0.0200");
+                WriteHandJoint(label, 1, "Wrist", rp, rq, 0.0200f, true, ref stats);
                 var palm = rp + rq * new Vector3(0f, 0f, 0.035f);
-                _handW.WriteLine($"{_elapsed:F6},{FrameIndex},{label},0,Palm,{palm.x:F6},{palm.y:F6},{palm.z:F6},{rq.x:F6},{rq.y:F6},{rq.z:F6},{rq.w:F6},0.0250");
-                wroteAny = true;
+                WriteHandJoint(label, 0, "Palm", palm, rq, 0.0250f, true, ref stats);
             }
         }
 
-        wroteAny |= WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Thumb, 2, 4);
-        wroteAny |= WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Index, 6, 5);
-        wroteAny |= WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Middle, 11, 5);
-        wroteAny |= WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Ring, 16, 5);
-        wroteAny |= WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Pinky, 21, 5);
+        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Thumb, 2, 4, ref stats);
+        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Index, 6, 5, ref stats);
+        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Middle, 11, 5, ref stats);
+        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Ring, 16, 5, ref stats);
+        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Pinky, 21, 5, ref stats);
 
-        return wroteAny;
+        return stats;
     }
 
-    bool WriteFingerBones(Hand handData, string label, UnityEngine.XR.HandFinger finger, int jointStartId, int targetCount)
+    void WriteFingerBones(Hand handData, string label, UnityEngine.XR.HandFinger finger, int jointStartId, int targetCount, ref HandSampleStats stats)
     {
         _tmpBones.Clear();
-        if (!handData.TryGetFingerBones(finger, _tmpBones) || _tmpBones.Count == 0) return false;
+        if (!handData.TryGetFingerBones(finger, _tmpBones) || _tmpBones.Count == 0) return;
 
-        bool wrote = false;
         int n = Mathf.Min(_tmpBones.Count, targetCount);
         for (int bi = 0; bi < n; bi++)
         {
@@ -410,10 +514,8 @@ public class SensorRecorder : MonoBehaviour
             int jid = jointStartId + bi;
             string jn = jid < JN.Length ? JN[jid] : $"J{jid}";
             float r = Mathf.Max(0.0075f, 0.018f - bi * 0.0022f);
-            _handW.WriteLine($"{_elapsed:F6},{FrameIndex},{label},{jid},{jn},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{r:F4}");
-            wrote = true;
+            WriteHandJoint(label, jid, jn, p, q, r, true, ref stats);
         }
-        return wrote;
     }
 
     void WriteControllerHandSkeletonFallback(string label, Vector3 wristPos, Quaternion wristRot)
@@ -447,6 +549,120 @@ public class SensorRecorder : MonoBehaviour
         WriteFinger(11, 5, new Vector3(0.000f, 0.000f, 0.035f), new Vector3(0.00f, 0.0f, 1.0f), new[] { 0.022f, 0.019f, 0.017f, 0.015f, 0.013f });   // Middle
         WriteFinger(16, 5, new Vector3(0.015f, 0.000f, 0.032f), new Vector3(0.05f, 0.0f, 1.0f), new[] { 0.021f, 0.018f, 0.016f, 0.014f, 0.012f });   // Ring
         WriteFinger(21, 5, new Vector3(0.030f, -0.001f, 0.028f), new Vector3(0.12f, 0.0f, 1.0f), new[] { 0.019f, 0.017f, 0.015f, 0.013f, 0.011f });  // Little
+    }
+
+    void WriteHandJoint(string label, int jointId, string jointName, Vector3 pos, Quaternion rot, float radius, bool realTracking, ref HandSampleStats stats)
+    {
+        _handW.WriteLine($"{_elapsed:F6},{FrameIndex},{label},{jointId},{jointName},{pos.x:F6},{pos.y:F6},{pos.z:F6},{rot.x:F6},{rot.y:F6},{rot.z:F6},{rot.w:F6},{radius:F4}");
+        stats.wroteAny = true;
+        if (!realTracking) return;
+        stats.usedRealTracking = true;
+        stats.realJointCount++;
+        stats.rotCount++;
+        stats.sumX += rot.x; stats.sumY += rot.y; stats.sumZ += rot.z; stats.sumW += rot.w;
+        stats.sumSqX += rot.x * rot.x; stats.sumSqY += rot.y * rot.y; stats.sumSqZ += rot.z * rot.z; stats.sumSqW += rot.w * rot.w;
+    }
+
+    static float ComputeRotationVariance(HandSampleStats stats)
+    {
+        if (stats.rotCount <= 1) return 0f;
+        float inv = 1f / stats.rotCount;
+        float mx = stats.sumX * inv;
+        float my = stats.sumY * inv;
+        float mz = stats.sumZ * inv;
+        float mw = stats.sumW * inv;
+        float vx = Mathf.Max(0f, stats.sumSqX * inv - mx * mx);
+        float vy = Mathf.Max(0f, stats.sumSqY * inv - my * my);
+        float vz = Mathf.Max(0f, stats.sumSqZ * inv - mz * mz);
+        float vw = Mathf.Max(0f, stats.sumSqW * inv - mw * mw);
+        return (vx + vy + vz + vw) * 0.25f;
+    }
+
+    public bool RunPreflightHealthCheck(out string message)
+    {
+        bool handOk = IsHandTrackingReadyForCapture(out string handDetail);
+        bool imuOk = IsImuReadyForCapture(out string imuDetail, out float accelMag);
+
+        if (handOk && imuOk)
+        {
+            message = $"hand=ok;imu=ok;accel_mag={accelMag:F2}";
+            return true;
+        }
+
+        var sb = new StringBuilder();
+        if (!handOk) sb.Append($"hand={handDetail}");
+        if (!imuOk)
+        {
+            if (sb.Length > 0) sb.Append("; ");
+            sb.Append($"imu={imuDetail};accel_mag={accelMag:F2}");
+        }
+        message = sb.ToString();
+        return false;
+    }
+
+    public bool IsHandTrackingReadyForCapture(out string detail)
+    {
+        _tmpHandSubsystems.Clear();
+        SubsystemManager.GetSubsystems(_tmpHandSubsystems);
+        int runningCount = 0;
+        for (int i = 0; i < _tmpHandSubsystems.Count; i++)
+        {
+            if (_tmpHandSubsystems[i] != null && _tmpHandSubsystems[i].running) runningCount++;
+        }
+        bool subsystemReady = runningCount > 0;
+
+        bool picoSettingReady = false;
+#if PICO_XR
+        try
+        {
+            picoSettingReady = PXR_Plugin.HandTracking.UPxr_GetHandTrackerSettingState();
+        }
+        catch
+        {
+            picoSettingReady = false;
+        }
+#endif
+
+        _tmpDevices.Clear();
+        InputDevices.GetDevicesWithCharacteristics(
+            InputDeviceCharacteristics.HandTracking | InputDeviceCharacteristics.TrackedDevice,
+            _tmpDevices);
+        bool trackedDevicesPresent = _tmpDevices.Count > 0;
+
+        bool granted = RuntimePermissions.HasAnyHandTrackingPermission();
+        bool ok = granted && (subsystemReady || picoSettingReady || trackedDevicesPresent);
+        detail = $"perm={granted};subsystems_running={runningCount};tracked_devices={_tmpDevices.Count};pico_setting={picoSettingReady}";
+        return ok;
+    }
+
+    public bool IsImuReadyForCapture(out string detail, out float accelMag)
+    {
+        var native = NativeIMUBridge.Instance;
+        Vector3 candidate = Vector3.zero;
+        bool nativeReady = native != null && native.IsActive && native.HasFreshData;
+        if (nativeReady)
+            candidate = native.Acceleration;
+        if (candidate.sqrMagnitude < 1e-8f)
+            candidate = Input.acceleration;
+
+        accelMag = candidate.magnitude;
+        bool gravityPresent = accelMag >= 5f;
+        detail = $"native_active={nativeReady};accel_mag={accelMag:F3};gravity={gravityPresent}";
+        return gravityPresent;
+    }
+
+    void LogPermissionSnapshot()
+    {
+        bool handGranted = RuntimePermissions.HasAnyHandTrackingPermission();
+        bool bodyGranted = RuntimePermissions.HasAnyBodyTrackingPermission();
+        LogAction("permissions_state", "runtime", $"hand={handGranted};body={bodyGranted}");
+    }
+
+    void LogHandTrackingAvailability()
+    {
+        bool handOk = IsHandTrackingReadyForCapture(out string detail);
+        LogAction("hand_tracking_availability", handOk ? "ready" : "not_ready", detail);
+        Debug.Log($"[Hands] Availability: {detail}");
     }
 
     // ── Calibration ──
@@ -493,7 +709,7 @@ public class SensorRecorder : MonoBehaviour
         j.AppendLine("      \"LeftWrist\",\"RightWrist\",\"LeftHand\",\"RightHand\"],");
         j.AppendLine("    \"output_file\": \"body_pose.csv\"");
         j.AppendLine("  },");
-        j.AppendLine("  \"imu\": { \"location\": \"HMD\", \"accel_unit\": \"m/s^2\", \"gyro_unit\": \"rad/s\", \"source\": \"auto_multi_source\" },");
+        j.AppendLine("  \"imu\": { \"location\": \"HMD\", \"accel_unit\": \"m/s^2\", \"gyro_unit\": \"rad/s\", \"gravity_unit\": \"m/s^2\", \"source\": \"auto_multi_source\", \"columns\": [\"accel_xyz\",\"gyro_xyz\",\"grav_xyz\"] },");
         j.AppendLine("  \"sync\": {");
         j.AppendLine($"    \"method\": \"clap_gesture + audio_beep + wallclock\",");
         j.AppendLine($"    \"sensor_epoch_realtime\": {_startRealtime:F6}, \"sensor_epoch_unix_s\": {_startWallclock:F3},");
@@ -512,7 +728,13 @@ public class SensorRecorder : MonoBehaviour
         j.AppendLine($"  \"scenario_category\": \"{Esc(scenarioCategory)}\",");
         j.AppendLine($"  \"total_frames\": {FrameIndex}, \"duration_s\": {_elapsed:F3},");
         j.AppendLine($"  \"actual_fps\": {(FrameIndex / Math.Max(_elapsed, 0.001)):F2}, \"target_fps\": {sampleRateHz},");
-        j.AppendLine($"  \"start_unix_s\": {_startWallclock:F3}, \"end_unix_s\": {endWall:F3}");
+        j.AppendLine($"  \"start_unix_s\": {_startWallclock:F3}, \"end_unix_s\": {endWall:F3},");
+        j.AppendLine("  \"quality\": {");
+        j.AppendLine($"    \"real_hand_frame_ratio\": {RealHandFrameRatio:F4},");
+        j.AppendLine($"    \"imu_gravity_frame_ratio\": {ImuGravityFrameRatio:F4},");
+        j.AppendLine($"    \"hand_fallback_frames\": {_handFallbackFrameCount},");
+        j.AppendLine($"    \"imu_fallback_frames\": {_imuFallbackFrameCount}");
+        j.AppendLine("  }");
         j.AppendLine("}");
         File.WriteAllText(Path.Combine(_sessionDir, "session_summary.json"), j.ToString());
     }

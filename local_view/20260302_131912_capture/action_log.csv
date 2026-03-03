@@ -1,0 +1,13 @@
+ts_s,frame,event_type,action_type,metadata
+0.000000,0,session_start,capture,scenario=general
+0.000000,0,mesh_provider_start,xr_mesh_subsystem,ok
+0.000000,0,task_start,capture,user_initiated
+0.000000,0,video_start,android_projection,pending
+0.043921,0,imu_fallback,xr_head_kinematics,native_or_gyro_unavailable
+0.068310,2,mesh_provider_start,spatial_anchor,ok
+0.510810,22,mesh_provider_start,scene_capture,ok
+2.244722,93,video_start,android_projection,ok
+17.582529,757,task_end,capture,user_initiated
+17.582529,757,video_stop,android_projection,ok
+17.582529,757,video_saved,pov_video.mp4,src=/storage/emulated/0/Android/data/com.sentientx.datacapture/files/dataset_capture/20260302_131912_capture/pov_video.mp4
+17.582529,757,session_end,capture,frames=757
