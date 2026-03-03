@@ -13,6 +13,7 @@
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- PICO-specific permissions -->
     <uses-permission android:name="com.picovr.permission.HAND_TRACKING" />
@@ -23,8 +24,13 @@
     <uses-permission android:name="com.picoxr.permission.SPATIAL_DATA" />
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
 
+    <!-- PICO hand tracking: allows app to run without controllers -->
+    <uses-feature android:name="picoxr.software.handtracking" android:required="false" />
+    <uses-feature android:name="wave.feature.handtracking" android:required="false" />
+
     <application
         android:requestLegacyExternalStorage="true">
+
         <service
             android:name="com.sentientx.datacapture.ScreenRecorderService"
             android:enabled="true"
@@ -50,6 +56,16 @@
 
             <meta-data android:name="unityplayer.UnityActivity" android:value="true" />
         </activity>
+
+        <receiver
+            android:name="com.sentientx.datacapture.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <meta-data android:name="pvr.app.type" android:value="vr" />
         <meta-data android:name="pvr.sdk.version" android:value="PICO Unity Integration SDK" />

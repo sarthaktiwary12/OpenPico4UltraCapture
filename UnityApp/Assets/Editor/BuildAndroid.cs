@@ -20,6 +20,10 @@ public static class BuildAndroid
     public static void BuildCI()
     {
         EnsurePXRProjectSettings();
+        // NOTE: EnsurePXROpenXRProjectSettings sets isHandTracking=true which causes
+        // the PICO SDK to add handtracking=1 to the manifest. This causes the app to
+        // hang on startup on some firmware versions. Disabled until root cause is found.
+        // EnsurePXROpenXRProjectSettings();
         EnsureScene();
 
         EditorBuildSettings.scenes = new[]
@@ -117,6 +121,37 @@ public static class BuildAndroid
         if (instance is UnityEngine.Object obj) EditorUtility.SetDirty(obj);
         AssetDatabase.SaveAssets();
         Debug.Log("[Build] PXR_ProjectSetting configured: hand+body+mesh.");
+    }
+
+    private static void EnsurePXROpenXRProjectSettings()
+    {
+        // The PICO OpenXR build processor (PXR_BuildProcessor.PXR_Manifest) checks
+        // PXR_OpenXRProjectSetting.isHandTracking to decide manifest meta-data.
+        // When isHandTracking=false, it injects controller=1 and removes handtracking,
+        // causing PICO to show "controller required" and block hand tracking input.
+        var type = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .SelectMany(SafeGetTypes)
+            .FirstOrDefault(t => t.FullName == "Unity.XR.OpenXR.Features.PICOSupport.PXR_OpenXRProjectSetting");
+        if (type == null) { Debug.LogWarning("[Build] PXR_OpenXRProjectSetting type not found."); return; }
+
+        var getInstance = type.GetMethod("GetProjectConfig",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        var instance = getInstance?.Invoke(null, null);
+        if (instance == null) { Debug.LogWarning("[Build] PXR_OpenXRProjectSetting instance not found."); return; }
+
+        void SetField(string name, object val) {
+            var f = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (f != null) f.SetValue(instance, val);
+        }
+
+        SetField("isHandTracking", true);
+        // HandTrackingSupport.ControllersAndHands = 0 — app works with both input modes.
+        // This causes the build processor to emit both handtracking=1 AND controller=1.
+
+        if (instance is UnityEngine.Object obj) EditorUtility.SetDirty(obj);
+        AssetDatabase.SaveAssets();
+        Debug.Log("[Build] PXR_OpenXRProjectSetting configured: isHandTracking=true.");
     }
 
     private static void EnsureScene()

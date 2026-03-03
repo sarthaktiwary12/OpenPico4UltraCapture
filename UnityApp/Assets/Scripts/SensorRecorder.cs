@@ -34,6 +34,7 @@ public class SensorRecorder : MonoBehaviour
     public Vector3 LastImuGravity { get; private set; }
     public float RealHandFrameRatio => _sampleCount > 0 ? (float)_realHandFrameCount / _sampleCount : 0f;
     public float ImuGravityFrameRatio => _sampleCount > 0 ? (float)_imuGravityFrameCount / _sampleCount : 0f;
+    public double SessionElapsedNow => GetLiveSessionElapsed();
 
     private string _sessionDir;
     private double _startRealtime, _startWallclock, _elapsed;
@@ -94,17 +95,24 @@ public class SensorRecorder : MonoBehaviour
         if (now - _lastSample < _sampleInterval) return;
         _lastSample = now;
         LastSampleRealtimeS = now;
-        _elapsed = Time.realtimeSinceStartupAsDouble - _startRealtime;
+        _elapsed = GetLiveSessionElapsed();
         SampleHeadPose();
         SampleHands();
         SampleIMU();
         _sampleCount++;
         FrameIndex++;
         // Flush every 60 frames to prevent data loss on crash/kill
-        if (FrameIndex % 60 == 0) { _headW?.Flush(); _handW?.Flush(); _imuW?.Flush(); }
+        if (FrameIndex % 60 == 0)
+        {
+            _headW?.Flush();
+            _handW?.Flush();
+            _imuW?.Flush();
+            WriteSummary();
+        }
     }
 
     void OnDestroy() { if (IsRecording) StopSession(); }
+    void OnApplicationPause(bool pause) { if (pause && IsRecording) FlushCheckpoint(); }
 
     public string StartSession(string task, string scenario)
     {
@@ -147,16 +155,19 @@ public class SensorRecorder : MonoBehaviour
         LogPermissionSnapshot();
         LogHandTrackingAvailability();
         WriteCalibration(); LogAction("session_start", task, $"scenario={scenario}");
+        WriteSummary();
         Debug.Log($"[Rec] Started: {SessionId} → {_sessionDir}");
         return SessionId;
     }
 
     public void StopSession(string endEventType = "session_end", string endMetadata = "")
     {
-        if (!IsRecording) return; IsRecording = false;
+        if (!IsRecording) return;
+        _elapsed = GetLiveSessionElapsed();
+        IsRecording = false;
         if (string.IsNullOrEmpty(endMetadata))
             endMetadata = $"frames={FrameIndex}";
-        LogAction(endEventType, taskType, endMetadata);
+        WriteActionRow(_elapsed, endEventType, taskType, endMetadata);
         Close(ref _headW); Close(ref _handW); Close(ref _imuW); Close(ref _actionW);
         WriteSummary();
         Debug.Log($"[Rec] Stopped: {FrameIndex} frames, {_elapsed:F1}s");
@@ -164,11 +175,31 @@ public class SensorRecorder : MonoBehaviour
 
     public void LogAction(string evt, string action = "", string meta = "")
     {
-        _actionW?.WriteLine($"{_elapsed:F6},{FrameIndex},{evt},{Esc(action)},{Esc(meta)}");
-        _actionW?.Flush();
+        if (_actionW == null) return;
+        if (IsRecording) _elapsed = GetLiveSessionElapsed();
+        WriteActionRow(_elapsed, evt, action, meta);
     }
 
     public string GetSessionDir() => _sessionDir;
+    public double GetLiveSessionElapsed()
+    {
+        if (_startRealtime <= 0.0) return _elapsed;
+        var now = Time.realtimeSinceStartupAsDouble - _startRealtime;
+        if (double.IsNaN(now) || double.IsInfinity(now)) return _elapsed;
+        if (now < _elapsed) return _elapsed;
+        return now;
+    }
+
+    public void FlushCheckpoint()
+    {
+        if (!IsRecording) return;
+        _elapsed = GetLiveSessionElapsed();
+        _headW?.Flush();
+        _handW?.Flush();
+        _imuW?.Flush();
+        _actionW?.Flush();
+        WriteSummary();
+    }
 
     // ── Sampling ──
 
@@ -344,9 +375,23 @@ public class SensorRecorder : MonoBehaviour
 
         if (grav.sqrMagnitude < 1e-8f && Input.gyro.enabled)
         {
+            Vector3 inferredGravity = Input.gyro.gravity;
+            if (inferredGravity.sqrMagnitude > 1e-8f)
+                grav = inferredGravity;
+        }
+
+        if (grav.sqrMagnitude < 1e-8f && Input.gyro.enabled)
+        {
             Vector3 inferredGravity = Input.acceleration - Input.gyro.userAcceleration;
             if (inferredGravity.sqrMagnitude > 1e-8f)
                 grav = inferredGravity;
+        }
+
+        // Last resort: if accel magnitude is near ~9.8 and no user accel data,
+        // the raw acceleration likely IS gravity (device stationary or slow movement).
+        if (grav.sqrMagnitude < 1e-8f && a.magnitude >= 8f && a.magnitude <= 12f)
+        {
+            grav = a;
         }
 
         LastImuAccelMagnitude = a.magnitude;
@@ -629,8 +674,12 @@ public class SensorRecorder : MonoBehaviour
             _tmpDevices);
         bool trackedDevicesPresent = _tmpDevices.Count > 0;
 
+        // HasAnyHandTrackingPermission now includes PICO SDK fallback checks,
+        // so this works even when Android permissions aren't formally granted.
         bool granted = RuntimePermissions.HasAnyHandTrackingPermission();
-        bool ok = granted && (subsystemReady || picoSettingReady || trackedDevicesPresent);
+
+        // Any positive signal means hand tracking should be accessible.
+        bool ok = granted || subsystemReady || picoSettingReady || trackedDevicesPresent;
         detail = $"perm={granted};subsystems_running={runningCount};tracked_devices={_tmpDevices.Count};pico_setting={picoSettingReady}";
         return ok;
     }
@@ -721,22 +770,36 @@ public class SensorRecorder : MonoBehaviour
 
     void WriteSummary()
     {
-        double endWall = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-        var j = new StringBuilder();
-        j.AppendLine("{");
-        j.AppendLine($"  \"session_id\": \"{SessionId}\", \"task_type\": \"{Esc(taskType)}\",");
-        j.AppendLine($"  \"scenario_category\": \"{Esc(scenarioCategory)}\",");
-        j.AppendLine($"  \"total_frames\": {FrameIndex}, \"duration_s\": {_elapsed:F3},");
-        j.AppendLine($"  \"actual_fps\": {(FrameIndex / Math.Max(_elapsed, 0.001)):F2}, \"target_fps\": {sampleRateHz},");
-        j.AppendLine($"  \"start_unix_s\": {_startWallclock:F3}, \"end_unix_s\": {endWall:F3},");
-        j.AppendLine("  \"quality\": {");
-        j.AppendLine($"    \"real_hand_frame_ratio\": {RealHandFrameRatio:F4},");
-        j.AppendLine($"    \"imu_gravity_frame_ratio\": {ImuGravityFrameRatio:F4},");
-        j.AppendLine($"    \"hand_fallback_frames\": {_handFallbackFrameCount},");
-        j.AppendLine($"    \"imu_fallback_frames\": {_imuFallbackFrameCount}");
-        j.AppendLine("  }");
-        j.AppendLine("}");
-        File.WriteAllText(Path.Combine(_sessionDir, "session_summary.json"), j.ToString());
+        if (string.IsNullOrEmpty(_sessionDir)) return;
+        try
+        {
+            double endWall = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            var j = new StringBuilder();
+            j.AppendLine("{");
+            j.AppendLine($"  \"session_id\": \"{SessionId}\", \"task_type\": \"{Esc(taskType)}\",");
+            j.AppendLine($"  \"scenario_category\": \"{Esc(scenarioCategory)}\",");
+            j.AppendLine($"  \"total_frames\": {FrameIndex}, \"duration_s\": {_elapsed:F3},");
+            j.AppendLine($"  \"actual_fps\": {(FrameIndex / Math.Max(_elapsed, 0.001)):F2}, \"target_fps\": {sampleRateHz},");
+            j.AppendLine($"  \"start_unix_s\": {_startWallclock:F3}, \"end_unix_s\": {endWall:F3},");
+            j.AppendLine("  \"quality\": {");
+            j.AppendLine($"    \"real_hand_frame_ratio\": {RealHandFrameRatio:F4},");
+            j.AppendLine($"    \"imu_gravity_frame_ratio\": {ImuGravityFrameRatio:F4},");
+            j.AppendLine($"    \"hand_fallback_frames\": {_handFallbackFrameCount},");
+            j.AppendLine($"    \"imu_fallback_frames\": {_imuFallbackFrameCount}");
+            j.AppendLine("  }");
+            j.AppendLine("}");
+            File.WriteAllText(Path.Combine(_sessionDir, "session_summary.json"), j.ToString());
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[Rec] Failed to write session_summary.json: {e.Message}");
+        }
+    }
+
+    void WriteActionRow(double ts, string evt, string action, string meta)
+    {
+        _actionW?.WriteLine($"{ts:F6},{FrameIndex},{evt},{Esc(action)},{Esc(meta)}");
+        _actionW?.Flush();
     }
 
     StreamWriter W(string fn, string hdr) { var w = new StreamWriter(Path.Combine(_sessionDir, fn), false, new UTF8Encoding(false), 65536); w.WriteLine(hdr); return w; }

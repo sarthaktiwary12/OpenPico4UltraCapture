@@ -19,6 +19,10 @@ public class SensorRecorder : MonoBehaviour
     public string SessionId { get; private set; }
     public long FrameIndex { get; private set; }
     public double SessionElapsed => _elapsed;
+    public double SessionElapsedNow => GetLiveSessionElapsed();
+    public bool HasHeadPose { get; private set; }
+    public Vector3 LastHeadPosition { get; private set; }
+    public Quaternion LastHeadRotation { get; private set; } = Quaternion.identity;
 
     private string _sessionDir;
     private double _startRealtime, _startWallclock, _elapsed;
@@ -43,12 +47,20 @@ public class SensorRecorder : MonoBehaviour
         float now = Time.realtimeSinceStartup;
         if (now - _lastSample < _sampleInterval) return;
         _lastSample = now;
-        _elapsed = Time.realtimeSinceStartupAsDouble - _startRealtime;
+        _elapsed = GetLiveSessionElapsed();
         SampleHeadPose(); SampleHands(); SampleIMU();
         FrameIndex++;
+        if (FrameIndex % 60 == 0)
+        {
+            _headW?.Flush();
+            _handW?.Flush();
+            _imuW?.Flush();
+            WriteSummary();
+        }
     }
 
     void OnDestroy() { if (IsRecording) StopSession(); }
+    void OnApplicationPause(bool pause) { if (pause && IsRecording) FlushCheckpoint(); }
 
     public string StartSession(string task, string scenario)
     {
@@ -65,19 +77,26 @@ public class SensorRecorder : MonoBehaviour
 
         _startRealtime = Time.realtimeSinceStartupAsDouble;
         _startWallclock = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+        _elapsed = 0.0;
         _nativeImu = NativeIMUBridge.Instance != null && NativeIMUBridge.Instance.IsActive;
         if (SystemInfo.supportsGyroscope) Input.gyro.enabled = true;
+        HasHeadPose = false;
+        LastHeadPosition = Vector3.zero;
+        LastHeadRotation = Quaternion.identity;
         FrameIndex = 0; _lastSample = Time.realtimeSinceStartup;
         IsRecording = true;
         WriteCalibration(); LogAction("session_start", task, $"scenario={scenario}");
+        WriteSummary();
         Debug.Log($"[Rec] Started: {SessionId} → {_sessionDir}");
         return SessionId;
     }
 
     public void StopSession()
     {
-        if (!IsRecording) return; IsRecording = false;
-        LogAction("session_end", taskType, $"frames={FrameIndex}");
+        if (!IsRecording) return;
+        _elapsed = GetLiveSessionElapsed();
+        IsRecording = false;
+        WriteActionRow(_elapsed, "session_end", taskType, $"frames={FrameIndex}");
         Close(ref _headW); Close(ref _handW); Close(ref _imuW); Close(ref _actionW);
         WriteSummary();
         Debug.Log($"[Rec] Stopped: {FrameIndex} frames, {_elapsed:F1}s");
@@ -85,11 +104,31 @@ public class SensorRecorder : MonoBehaviour
 
     public void LogAction(string evt, string action = "", string meta = "")
     {
-        _actionW?.WriteLine($"{_elapsed:F6},{FrameIndex},{evt},{Esc(action)},{Esc(meta)}");
-        _actionW?.Flush();
+        if (_actionW == null) return;
+        if (IsRecording) _elapsed = GetLiveSessionElapsed();
+        WriteActionRow(_elapsed, evt, action, meta);
     }
 
     public string GetSessionDir() => _sessionDir;
+    public double GetLiveSessionElapsed()
+    {
+        if (_startRealtime <= 0.0) return _elapsed;
+        var now = Time.realtimeSinceStartupAsDouble - _startRealtime;
+        if (double.IsNaN(now) || double.IsInfinity(now)) return _elapsed;
+        if (now < _elapsed) return _elapsed;
+        return now;
+    }
+
+    public void FlushCheckpoint()
+    {
+        if (!IsRecording) return;
+        _elapsed = GetLiveSessionElapsed();
+        _headW?.Flush();
+        _handW?.Flush();
+        _imuW?.Flush();
+        _actionW?.Flush();
+        WriteSummary();
+    }
 
     // ── Sampling ──
 
@@ -97,10 +136,13 @@ public class SensorRecorder : MonoBehaviour
     {
         var hmd = InputDevices.GetDeviceAtXRNode(XRNode.Head);
         if (!hmd.isValid) return;
-        hmd.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 p);
-        hmd.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion r);
+        if (!hmd.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 p)) return;
+        if (!hmd.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion r)) return;
         string ts = "0";
         if (hmd.TryGetFeatureValue(CommonUsages.trackingState, out InputTrackingState s)) ts = ((int)s).ToString();
+        HasHeadPose = true;
+        LastHeadPosition = p;
+        LastHeadRotation = r;
         _headW.WriteLine($"{_elapsed:F6},{FrameIndex},{p.x:F6},{p.y:F6},{p.z:F6},{r.x:F6},{r.y:F6},{r.z:F6},{r.w:F6},{ts}");
     }
 
@@ -201,16 +243,30 @@ public class SensorRecorder : MonoBehaviour
 
     void WriteSummary()
     {
-        double endWall = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-        var j = new StringBuilder();
-        j.AppendLine("{");
-        j.AppendLine($"  \"session_id\": \"{SessionId}\", \"task_type\": \"{Esc(taskType)}\",");
-        j.AppendLine($"  \"scenario_category\": \"{Esc(scenarioCategory)}\",");
-        j.AppendLine($"  \"total_frames\": {FrameIndex}, \"duration_s\": {_elapsed:F3},");
-        j.AppendLine($"  \"actual_fps\": {(FrameIndex / Math.Max(_elapsed, 0.001)):F2}, \"target_fps\": {sampleRateHz},");
-        j.AppendLine($"  \"start_unix_s\": {_startWallclock:F3}, \"end_unix_s\": {endWall:F3}");
-        j.AppendLine("}");
-        File.WriteAllText(Path.Combine(_sessionDir, "session_summary.json"), j.ToString());
+        if (string.IsNullOrEmpty(_sessionDir)) return;
+        try
+        {
+            double endWall = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            var j = new StringBuilder();
+            j.AppendLine("{");
+            j.AppendLine($"  \"session_id\": \"{SessionId}\", \"task_type\": \"{Esc(taskType)}\",");
+            j.AppendLine($"  \"scenario_category\": \"{Esc(scenarioCategory)}\",");
+            j.AppendLine($"  \"total_frames\": {FrameIndex}, \"duration_s\": {_elapsed:F3},");
+            j.AppendLine($"  \"actual_fps\": {(FrameIndex / Math.Max(_elapsed, 0.001)):F2}, \"target_fps\": {sampleRateHz},");
+            j.AppendLine($"  \"start_unix_s\": {_startWallclock:F3}, \"end_unix_s\": {endWall:F3}");
+            j.AppendLine("}");
+            File.WriteAllText(Path.Combine(_sessionDir, "session_summary.json"), j.ToString());
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[Rec] Failed to write session_summary.json: {e.Message}");
+        }
+    }
+
+    void WriteActionRow(double ts, string evt, string action, string meta)
+    {
+        _actionW?.WriteLine($"{ts:F6},{FrameIndex},{evt},{Esc(action)},{Esc(meta)}");
+        _actionW?.Flush();
     }
 
     StreamWriter W(string fn, string hdr) { var w = new StreamWriter(Path.Combine(_sessionDir, fn), false, new UTF8Encoding(false), 65536); w.WriteLine(hdr); return w; }

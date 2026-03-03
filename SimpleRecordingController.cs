@@ -164,6 +164,13 @@ public class SimpleRecordingController : MonoBehaviour
         catch (System.Exception e)
         {
             Debug.LogError("[Controller] Failed to start recording: " + e.Message);
+            if (sensorRecorder != null && sensorRecorder.IsRecording)
+            {
+                bodyTrackingRecorder?.StopCapture();
+                spatialMeshCapture?.StopCapture();
+                sensorRecorder.StopSession();
+            }
+            _recording = false;
             SetStatus("ERROR\n" + e.Message);
         }
     }
@@ -401,5 +408,58 @@ public class SimpleRecordingController : MonoBehaviour
     void SetStatus(string msg)
     {
         if (txtStatus != null) txtStatus.text = msg;
+    }
+
+    void OnApplicationPause(bool pause)
+    {
+        if (sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        sensorRecorder.LogAction(pause ? "app_pause" : "app_resume", "lifecycle", pause ? "true" : "false");
+        if (pause) sensorRecorder.FlushCheckpoint();
+    }
+
+    void OnApplicationFocus(bool focus)
+    {
+        if (sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        sensorRecorder.LogAction(focus ? "app_focus" : "app_unfocus", "lifecycle", focus ? "true" : "false");
+        if (!focus) sensorRecorder.FlushCheckpoint();
+    }
+
+    void OnApplicationQuit()
+    {
+        if (sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        ForceCloseRecordingSession("application_quit");
+    }
+
+    void OnDisable()
+    {
+        if (sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        ForceCloseRecordingSession("controller_disabled");
+    }
+
+    void OnDestroy()
+    {
+        if (sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        ForceCloseRecordingSession("controller_destroyed");
+    }
+
+    void ForceCloseRecordingSession(string reason)
+    {
+        if (sensorRecorder == null || !sensorRecorder.IsRecording) return;
+        try
+        {
+            StopVideoRecording();
+            bodyTrackingRecorder?.StopCapture();
+            spatialMeshCapture?.StopCapture();
+            sensorRecorder.LogAction("session_end_crash", "capture", $"reason={reason}");
+            sensorRecorder.StopSession();
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Controller] ForceClose failed ({reason}): {e.Message}");
+        }
+        finally
+        {
+            _recording = false;
+        }
     }
 }

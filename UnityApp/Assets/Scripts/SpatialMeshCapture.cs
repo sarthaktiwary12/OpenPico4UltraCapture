@@ -24,8 +24,10 @@ public class SpatialMeshCapture : MonoBehaviour
     private bool _providerStartInFlight;
     private int _emptyQueryCount;
     private int _lastLoggedQueryCode = int.MinValue;
+#if PICO_XR
     private readonly List<PxrSpatialMeshInfo> _eventMeshes = new List<PxrSpatialMeshInfo>();
     private bool _hasEventMeshes;
+#endif
     private XRMeshSubsystem _xrMeshSubsystem;
     private bool _xrMeshInitTried;
     private readonly List<MeshInfo> _xrMeshInfos = new List<MeshInfo>();
@@ -54,8 +56,10 @@ public class SpatialMeshCapture : MonoBehaviour
         _providerStartInFlight = false;
         _emptyQueryCount = 0;
         _lastLoggedQueryCode = int.MinValue;
+#if PICO_XR
         _eventMeshes.Clear();
         _hasEventMeshes = false;
+#endif
         _xrMeshInitTried = false;
         _xrMeshInfos.Clear();
         _xrMeshCache.Clear();
@@ -86,6 +90,7 @@ public class SpatialMeshCapture : MonoBehaviour
         if (!_queryInFlight) StartCoroutine(SnapRoutine());
     }
 
+#if PICO_XR && PICO_OPENXR_SDK
     void OnSpatialMeshDataUpdated(List<PxrSpatialMeshInfo> meshInfos)
     {
         if (!_on || meshInfos == null) return;
@@ -93,6 +98,7 @@ public class SpatialMeshCapture : MonoBehaviour
         _eventMeshes.AddRange(meshInfos);
         _hasEventMeshes = _eventMeshes.Count > 0;
     }
+#endif
 
     System.Collections.IEnumerator EnsureProviderReady()
     {
@@ -280,6 +286,7 @@ public class SpatialMeshCapture : MonoBehaviour
         return true;
     }
 
+#if PICO_XR
     bool SnapFromPicoMeshInfos(List<PxrSpatialMeshInfo> meshInfos)
     {
         var verts = new List<Vector3>();
@@ -310,6 +317,7 @@ public class SpatialMeshCapture : MonoBehaviour
         WriteSnapshot(verts, tris);
         return true;
     }
+#endif
 
     bool SnapFromSceneMeshFilters()
     {

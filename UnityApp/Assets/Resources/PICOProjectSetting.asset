@@ -15,7 +15,7 @@ MonoBehaviour:
   useContentProtect: 0
   isEyeTracking: 0
   MRSafeguard: 0
-  isHandTracking: 0
+  isHandTracking: 1
   isEyeTrackingCalibration: 0
   highFrequencyHand: 0
   displayFrequency: 0

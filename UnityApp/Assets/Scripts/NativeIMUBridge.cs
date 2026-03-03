@@ -52,12 +52,11 @@ public class NativeIMUBridge : MonoBehaviour
             _linSensor = _sensorManager?.Call<AndroidJavaObject>("getDefaultSensor", TYPE_LINEAR_ACCELERATION);
             _gyroSensor = _sensorManager?.Call<AndroidJavaObject>("getDefaultSensor", TYPE_GYROSCOPE);
 
-            bool hasAccelPath = _accSensor != null || (_linSensor != null && _gravSensor != null);
-            if (_sensorManager == null || _gyroSensor == null || !hasAccelPath)
+            if (_sensorManager == null)
             {
                 IsActive = false;
                 Input.gyro.enabled = true;
-                Debug.LogWarning("[IMU] Android sensors unavailable, using Unity fallback.");
+                Debug.LogWarning("[IMU] Android SensorManager unavailable, using Unity fallback.");
                 return;
             }
 
@@ -69,18 +68,24 @@ public class NativeIMUBridge : MonoBehaviour
             bool accOk = _accSensor != null && _sensorManager.Call<bool>("registerListener", _accListener, _accSensor, 0);
             bool gravOk = _gravSensor != null && _sensorManager.Call<bool>("registerListener", _gravListener, _gravSensor, 0);
             bool linOk = _linSensor != null && _sensorManager.Call<bool>("registerListener", _linListener, _linSensor, 0);
-            bool gyroOk = _sensorManager.Call<bool>("registerListener", _gyroListener, _gyroSensor, 0);
+            bool gyroOk = _gyroSensor != null && _sensorManager.Call<bool>("registerListener", _gyroListener, _gyroSensor, 0);
 
-            bool accelPathOk = accOk || (linOk && gravOk);
-            IsActive = accelPathOk && gyroOk;
+            // Activate if we have ANY useful sensor data path. On PICO, the XR runtime
+            // may consume the gyroscope exclusively, but gravity and accelerometer can
+            // still provide valuable data. Gyro fallback comes from XR head kinematics.
+            bool hasAnySensor = accOk || gravOk || linOk || gyroOk;
+            IsActive = hasAnySensor;
+
+            // Always enable Unity gyro as supplemental source
+            Input.gyro.enabled = true;
 
             Debug.Log($"[IMU] Sensor(acc): {DescribeSensor(_accSensor)} register={accOk}");
             Debug.Log($"[IMU] Sensor(gravity): {DescribeSensor(_gravSensor)} register={gravOk}");
             Debug.Log($"[IMU] Sensor(linear): {DescribeSensor(_linSensor)} register={linOk}");
             Debug.Log($"[IMU] Sensor(gyro): {DescribeSensor(_gyroSensor)} register={gyroOk}");
 
-            if (IsActive) Debug.Log("[IMU] Android sensors OK");
-            else Debug.LogWarning($"[IMU] registerListener failed: acc={accOk}, grav={gravOk}, lin={linOk}, gyro={gyroOk}");
+            if (IsActive) Debug.Log($"[IMU] Android sensors OK (acc={accOk}, grav={gravOk}, lin={linOk}, gyro={gyroOk})");
+            else Debug.LogWarning("[IMU] No Android sensors registered, using Unity fallback only.");
         }
         catch (Exception e) { Debug.LogWarning($"[IMU] Native fail: {e.Message}"); IsActive = false; Input.gyro.enabled = true; }
 #else

@@ -3,9 +3,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.XR;
+using UnityEngine.XR.Hands;
+#if PICO_XR
+using Unity.XR.PXR;
+#endif
 
 public class SimpleRecordingController : MonoBehaviour
 {
@@ -31,6 +36,8 @@ public class SimpleRecordingController : MonoBehaviour
     private bool _recording;
     private float _startTime;
     private bool _triggerWasDown;
+    private bool _handTrackingReady;
+    private float _handTrackingReadyTime;
     private string _sessionDir;
     private long _videoStartTimeMs;
     private string _videoBackend = "none";
@@ -42,6 +49,9 @@ public class SimpleRecordingController : MonoBehaviour
     private float _preflightOverrideUntilS;
     private bool _stallDetectedLogged;
     private string _pendingPreflightResult;
+
+    // Hand tracking live status (shown on screen in idle state)
+    private string _handStatus = "waiting...";
 
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
@@ -58,7 +68,7 @@ public class SimpleRecordingController : MonoBehaviour
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
         SetHudVisible(true);
         SetIdle();
-        Debug.Log("[Controller] Ready. Press A or Trigger to toggle recording.");
+        Debug.Log("[Controller] Ready. Point at button and pinch, or press A/Trigger to toggle recording.");
         StartCoroutine(LogDiagnostics());
     }
 
@@ -108,6 +118,12 @@ public class SimpleRecordingController : MonoBehaviour
                 RenderLiveStatus();
                 RunRecordingWatchdog();
             }
+            else
+            {
+                // Refresh idle status to show live hand tracking state
+                if (_handTrackingReady && _handFrameCount % 36 == 0)
+                    SetIdle();
+            }
         }
         catch (System.Exception e)
         {
@@ -121,6 +137,7 @@ public class SimpleRecordingController : MonoBehaviour
     {
         bool down = false;
 
+        // --- Controller input ---
         var right = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
         if (right.isValid)
         {
@@ -152,12 +169,226 @@ public class SimpleRecordingController : MonoBehaviour
             }
         }
 
+        // --- Hand tracking pinch input ---
+        if (!down)
+            down = CheckHandTrackingPinch();
+
         if (down && !_triggerWasDown)
         {
-            Debug.Log("[Controller] Controller input -> Toggle");
+            Debug.Log("[Controller] Input -> Toggle (hand or controller)");
             OnToggle();
         }
         _triggerWasDown = down;
+    }
+
+    // ----- Hand tracking state -----
+    private int _handFrameCount;
+    private int _handDiagLogCount;
+    private XRHandSubsystem _xrHandSub;
+    private bool _xrHandSubSearched;
+    private string _handMethod = "";
+
+    bool CheckHandTrackingPinch()
+    {
+        // Delay to let XR subsystem fully initialize.
+        if (!_handTrackingReady)
+        {
+            if (_handTrackingReadyTime == 0f)
+                _handTrackingReadyTime = Time.time + 5f;
+            if (Time.time < _handTrackingReadyTime)
+                return false;
+            _handTrackingReady = true;
+            Debug.Log("[Hand] Starting hand tracking polling (5s delay elapsed).");
+        }
+
+        _handFrameCount++;
+        // Only poll every 3rd frame.
+        if (_handFrameCount % 3 != 0)
+            return false;
+
+        bool pinchDetected = false;
+
+        // ====================================================================
+        // METHOD 1: XR Input devices with HandTracking characteristic
+        //   (OpenXR HandInteractionProfile creates these automatically)
+        // ====================================================================
+        var handDevices = new List<InputDevice>();
+        InputDevices.GetDevicesWithCharacteristics(
+            InputDeviceCharacteristics.HandTracking, handDevices);
+
+        foreach (var dev in handDevices)
+        {
+            // Try trigger (maps to pinch in HandInteractionProfile)
+            if (dev.TryGetFeatureValue(CommonUsages.trigger, out float trigVal) && trigVal > 0.5f)
+            {
+                pinchDetected = true;
+                _handMethod = "XRInput-trigger";
+            }
+            if (dev.TryGetFeatureValue(CommonUsages.triggerButton, out bool trigBtn) && trigBtn)
+            {
+                pinchDetected = true;
+                _handMethod = "XRInput-triggerBtn";
+            }
+            // Try grip (maps to grasp in HandInteractionProfile)
+            if (dev.TryGetFeatureValue(CommonUsages.grip, out float gripVal) && gripVal > 0.5f)
+            {
+                pinchDetected = true;
+                _handMethod = "XRInput-grip";
+            }
+            if (dev.TryGetFeatureValue(CommonUsages.primaryButton, out bool primBtn) && primBtn)
+            {
+                pinchDetected = true;
+                _handMethod = "XRInput-primaryBtn";
+            }
+        }
+
+        // ====================================================================
+        // METHOD 2: XRHandSubsystem (com.unity.xr.hands via OpenXR)
+        //   Provides raw joint positions - detect pinch by finger distance
+        // ====================================================================
+        if (!pinchDetected)
+        {
+            if (!_xrHandSubSearched || (_xrHandSub == null && _handFrameCount % 90 == 0))
+            {
+                _xrHandSubSearched = true;
+                var subs = new List<XRHandSubsystem>();
+                SubsystemManager.GetSubsystems(subs);
+                _xrHandSub = subs.Count > 0 ? subs[0] : null;
+                if (_xrHandSub != null)
+                    Debug.Log($"[Hand] XRHandSubsystem found: {_xrHandSub.subsystemDescriptor.id}, running={_xrHandSub.running}");
+            }
+
+            if (_xrHandSub != null && _xrHandSub.running)
+            {
+                if (CheckXRHandPinch(_xrHandSub.rightHand, "R") ||
+                    CheckXRHandPinch(_xrHandSub.leftHand, "L"))
+                {
+                    pinchDetected = true;
+                    _handMethod = "XRHands-joint";
+                }
+            }
+        }
+
+        // ====================================================================
+        // METHOD 3: PICO native API (may work in OpenXR mode via native lib)
+        // ====================================================================
+#if PICO_XR
+        if (!pinchDetected)
+        {
+            try
+            {
+                if (CheckPicoNativePinch(HandType.HandRight, "R") ||
+                    CheckPicoNativePinch(HandType.HandLeft, "L"))
+                {
+                    pinchDetected = true;
+                    _handMethod = "PICO-native";
+                }
+            }
+            catch (System.Exception e)
+            {
+                if (_handDiagLogCount < 3)
+                    Debug.LogWarning($"[Hand] PICO native error: {e.Message}");
+            }
+        }
+#endif
+
+        // ====================================================================
+        // Update on-screen status every ~0.5s
+        // ====================================================================
+        if (_handFrameCount % 36 == 0)
+            UpdateHandStatus(handDevices);
+
+        if (pinchDetected)
+        {
+            if (_handDiagLogCount < 10)
+            {
+                _handDiagLogCount++;
+                Debug.Log($"[Hand] PINCH via {_handMethod}");
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    bool CheckXRHandPinch(XRHand hand, string label)
+    {
+        if (!hand.isTracked) return false;
+        var thumbTip = hand.GetJoint(XRHandJointID.ThumbTip);
+        var indexTip = hand.GetJoint(XRHandJointID.IndexTip);
+        if (!thumbTip.TryGetPose(out Pose tp) || !indexTip.TryGetPose(out Pose ip))
+            return false;
+        float dist = Vector3.Distance(tp.position, ip.position);
+        return dist < 0.03f; // 3cm pinch threshold
+    }
+
+#if PICO_XR
+    bool CheckPicoNativePinch(HandType hand, string label)
+    {
+        var aim = new HandAimState();
+        if (!PXR_Plugin.HandTracking.UPxr_GetHandTrackerAimState(hand, ref aim))
+            return false;
+        if ((aim.aimStatus & HandAimStatus.AimComputed) == 0)
+            return false;
+        return (aim.aimStatus & HandAimStatus.AimIndexPinching) != 0
+            || (aim.aimStatus & HandAimStatus.AimRayTouched) != 0;
+    }
+#endif
+
+    void UpdateHandStatus(List<InputDevice> handDevices)
+    {
+        var sb = new StringBuilder();
+
+        // Hand tracking XR input devices
+        sb.Append($"HandDevs:{handDevices.Count}");
+
+        // XRHandSubsystem status
+        if (_xrHandSub != null && _xrHandSub.running)
+        {
+            bool rT = _xrHandSub.rightHand.isTracked;
+            bool lT = _xrHandSub.leftHand.isTracked;
+            sb.Append($" Sub:R={rT},L={lT}");
+        }
+        else
+        {
+            sb.Append(_xrHandSub != null ? " Sub:stopped" : " Sub:none");
+        }
+
+        // PICO native status
+#if PICO_XR
+        try
+        {
+            var activeInput = PXR_Plugin.HandTracking.UPxr_GetHandTrackerActiveInputType();
+            sb.Append($" PICO:{activeInput}");
+        }
+        catch { sb.Append(" PICO:err"); }
+#endif
+
+        // Log details a few times
+        if (_handDiagLogCount < 5)
+        {
+            _handDiagLogCount++;
+            Debug.Log($"[Hand] {sb}");
+
+            // Log all XR devices for diagnostics
+            var allDevs = new List<InputDevice>();
+            InputDevices.GetDevices(allDevs);
+            foreach (var d in allDevs)
+                Debug.Log($"[Hand]   dev: {d.name} chars={d.characteristics}");
+
+#if PICO_XR
+            try
+            {
+                bool settingOn = PXR_Plugin.HandTracking.UPxr_GetHandTrackerSettingState();
+                var aimR = new HandAimState();
+                bool gotR = PXR_Plugin.HandTracking.UPxr_GetHandTrackerAimState(HandType.HandRight, ref aimR);
+                Debug.Log($"[Hand]   PICO setting={settingOn}, R.got={gotR}, R.status={aimR.aimStatus}");
+            }
+            catch (System.Exception e) { Debug.Log($"[Hand]   PICO err: {e.Message}"); }
+#endif
+        }
+
+        _handStatus = sb.ToString();
     }
 
     void OnToggle()
@@ -813,7 +1044,7 @@ public class SimpleRecordingController : MonoBehaviour
     void SetIdle()
     {
         SetHudVisible(true);
-        SetStatus("Press A or Trigger\nto start recording");
+        SetStatus($"Pinch at button or press A/Trigger\nHands: {_handStatus}");
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
     }

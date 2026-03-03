@@ -231,7 +231,7 @@ public class BodyTrackingRecorder : MonoBehaviour
             if (_frameHasNative[i]) nativeCount++;
         }
 
-        double ts = sensorRecorder.SessionElapsed;
+        double ts = sensorRecorder.GetLiveSessionElapsed();
         long frame = sensorRecorder.FrameIndex;
         for (int i = 0; i < 24; i++)
         {
@@ -265,7 +265,7 @@ public class BodyTrackingRecorder : MonoBehaviour
             }
         }
 
-        double ts = sensorRecorder.SessionElapsed;
+        double ts = sensorRecorder.GetLiveSessionElapsed();
         long frame = sensorRecorder.FrameIndex;
         for (int i = 0; i < 24; i++)
         {

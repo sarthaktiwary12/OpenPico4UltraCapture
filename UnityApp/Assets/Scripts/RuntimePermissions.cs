@@ -1,5 +1,8 @@
 using System.Collections;
 using UnityEngine;
+#if PICO_XR
+using Unity.XR.PXR;
+#endif
 
 public class RuntimePermissions : MonoBehaviour
 {
@@ -28,16 +31,73 @@ public class RuntimePermissions : MonoBehaviour
 #endif
     }
 
+    /// <summary>
+    /// Returns true if hand tracking is available. Checks Android permission first,
+    /// then falls back to PICO SDK setting state since PICO custom permissions
+    /// are not registered in Android's runtime permission framework.
+    /// </summary>
     public static bool HasAnyHandTrackingPermission()
     {
-        return IsPermissionGranted("com.picovr.permission.HAND_TRACKING") ||
-               IsPermissionGranted("com.picoxr.permission.HAND_TRACKING");
+        if (IsPermissionGranted("com.picovr.permission.HAND_TRACKING") ||
+            IsPermissionGranted("com.picoxr.permission.HAND_TRACKING"))
+            return true;
+
+        // PICO custom permissions aren't grantable via Android's permission system.
+        // Check the PICO SDK directly — if the system-level hand tracking setting
+        // is enabled, the app has access.
+#if PICO_XR
+        try
+        {
+            if (PXR_Plugin.HandTracking.UPxr_GetHandTrackerSettingState())
+                return true;
+        }
+        catch { }
+
+        // Also check the system setting via Android Settings API
+        try
+        {
+            if (GetGlobalSettingInt("sys_tracking_hand_enable") == 1)
+                return true;
+        }
+        catch { }
+#endif
+        return false;
     }
 
+    /// <summary>
+    /// Returns true if body tracking is available. Same fallback logic as hand tracking.
+    /// </summary>
     public static bool HasAnyBodyTrackingPermission()
     {
-        return IsPermissionGranted("com.picovr.permission.BODY_TRACKING") ||
-               IsPermissionGranted("com.picoxr.permission.BODY_TRACKING");
+        if (IsPermissionGranted("com.picovr.permission.BODY_TRACKING") ||
+            IsPermissionGranted("com.picoxr.permission.BODY_TRACKING"))
+            return true;
+
+#if PICO_XR
+        // Body tracking doesn't have a simple setting check like hand tracking.
+        // Check if the device supports it via the SDK.
+        try
+        {
+            bool supported = false;
+            int ret = PXR_MotionTracking.GetBodyTrackingSupported(ref supported);
+            if (ret == 0 && supported) return true;
+        }
+        catch { }
+#endif
+        return false;
+    }
+
+    private static int GetGlobalSettingInt(string key)
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        using var resolver = new AndroidJavaClass("android.provider.Settings$Global");
+        using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+        using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
+        using var cr = act.Call<AndroidJavaObject>("getContentResolver");
+        return resolver.CallStatic<int>("getInt", cr, key, 0);
+#else
+        return 0;
+#endif
     }
 
     private IEnumerator Start()
@@ -74,6 +134,9 @@ public class RuntimePermissions : MonoBehaviour
             bool granted = UnityEngine.Android.Permission.HasUserAuthorizedPermission(permission);
             Debug.Log($"[Perms] {permission} granted={granted}");
         }
+
+        // Log effective permission state using SDK fallback checks
+        Debug.Log($"[Perms] Effective hand_tracking={HasAnyHandTrackingPermission()}, body_tracking={HasAnyBodyTrackingPermission()}");
 #endif
         yield break;
     }
