@@ -6,6 +6,9 @@ using Unity.XR.PXR;
 
 public class RuntimePermissions : MonoBehaviour
 {
+    [Tooltip("Enable only when manually validating Android runtime permission prompts.")]
+    public bool requestOnStart = false;
+
     public static readonly string[] RequiredPermissions =
     {
         "android.permission.CAMERA",
@@ -13,13 +16,7 @@ public class RuntimePermissions : MonoBehaviour
         "android.permission.BODY_SENSORS",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.READ_MEDIA_VIDEO",
-        "com.picovr.permission.HAND_TRACKING",
-        "com.picovr.permission.BODY_TRACKING",
-        "com.picovr.permission.SPATIAL_DATA",
-        "com.picoxr.permission.HAND_TRACKING",
-        "com.picoxr.permission.BODY_TRACKING",
-        "com.picoxr.permission.SPATIAL_DATA"
+        "android.permission.READ_MEDIA_VIDEO"
     };
 
     public static bool IsPermissionGranted(string permission)
@@ -103,6 +100,12 @@ public class RuntimePermissions : MonoBehaviour
     private IEnumerator Start()
     {
 #if UNITY_ANDROID && !UNITY_EDITOR
+        if (!requestOnStart)
+        {
+            Debug.Log("[Perms] Runtime permission prompt disabled (requestOnStart=false).");
+            yield break;
+        }
+
         // Delay one frame to avoid requesting before activity is ready.
         yield return null;
 

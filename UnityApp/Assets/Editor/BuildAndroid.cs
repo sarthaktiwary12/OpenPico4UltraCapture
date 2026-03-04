@@ -173,8 +173,12 @@ public static class BuildAndroid
         var cam = cameraGo.AddComponent<Camera>();
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.backgroundColor = new Color(0, 0, 0, 0); // Transparent for passthrough
+        // Close-up hand joints can be within 10-20 cm when headset is neck-mounted.
+        cam.nearClipPlane = 0.05f;
+        cam.farClipPlane = 100f;
         cameraGo.AddComponent<AudioListener>();
-        cameraGo.AddComponent<PassthroughEnabler>();
+        var passthrough = cameraGo.AddComponent<PassthroughEnabler>();
+        passthrough.enableOnStart = false;
         AddTrackedPoseDriver(cameraGo);
 
         // Point XROrigin.CameraFloorOffsetObject and Camera at the right objects
@@ -223,12 +227,13 @@ public static class BuildAndroid
         canvas.worldCamera = cam;
         canvasGo.AddComponent<GraphicRaycaster>();
 
-        // Head-following behaviour so the canvas stays visible after turning
+        // Room-anchored panel so operator can walk to a fixed RECORD/STOP location.
         var follower = canvasGo.AddComponent<CanvasFollower>();
+        follower.placementMode = CanvasFollower.PlacementMode.AnchorInRoom;
         follower.targetCamera = cam;
-        follower.followDistance = 1.1f;
-        follower.heightOffset = 0.10f;
-        follower.rightOffset = 0.40f;
+        follower.followDistance = 1.8f;
+        follower.heightOffset = -0.1f;
+        follower.rightOffset = 0.85f;
         follower.reTargetAngle = 45f;
         follower.followSpeed = 5f;
 
@@ -285,7 +290,7 @@ public static class BuildAndroid
 
         // Status text below the button.
         var txtStatusGo = CreateUIText(btnGo.transform, "TxtStatus",
-            "Press A or Trigger\nto start recording",
+            "Move hand to button\nHands: waiting...",
             Vector2.zero, Vector2.zero, 28);
         var txtStatus = txtStatusGo.GetComponent<Text>();
         txtStatus.alignment = TextAnchor.UpperRight;
@@ -311,6 +316,11 @@ public static class BuildAndroid
         controller.txtStatus = txtStatus;
         controller.txtButtonLabel = btnLabel;
         controller.btnImage = btnImage;
+        controller.enableHandPinchToggle = true;
+        controller.requireHandNearButtonForPinch = false;
+        controller.blockStartWhenHandTrackingUnavailable = true;
+        controller.enableAdbRemoteControl = true;
+        controller.remoteCommandPollInterval = 0.25f;
 
         EditorSceneManager.SaveScene(scene, ScenePath);
     }

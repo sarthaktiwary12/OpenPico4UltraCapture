@@ -1,6 +1,9 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR.Hands;
+#if PICO_XR
+using Unity.XR.PXR;
+#endif
 
 public class HandVisualizer : MonoBehaviour
 {
@@ -9,13 +12,24 @@ public class HandVisualizer : MonoBehaviour
     public bool RightHandTracked { get; private set; }
     public bool LeftHandTracked { get; private set; }
 
-    const float JointRadius = 0.006f;
-    const float BoneWidth = 0.003f;
+    const float JointRadius = 0.012f;
+    const float BoneWidth = 0.007f;
 
-    static readonly Color LeftColor = new Color(0.2f, 0.7f, 1.0f, 0.5f);
-    static readonly Color RightColor = new Color(0.2f, 1.0f, 0.5f, 0.5f);
+    static readonly Color LeftColor = new Color(0.15f, 0.75f, 1.0f, 0.95f);
+    static readonly Color RightColor = new Color(0.2f, 1.0f, 0.45f, 0.95f);
 
     static readonly int JointCount = (int)XRHandJointID.LittleTip - (int)XRHandJointID.Wrist + 1;
+
+    // PICO native joint order (0..25) mapped to XR hand joint IDs.
+    static readonly XRHandJointID[] PxrJointToXrJoint =
+    {
+        XRHandJointID.Palm, XRHandJointID.Wrist,
+        XRHandJointID.ThumbMetacarpal, XRHandJointID.ThumbProximal, XRHandJointID.ThumbDistal, XRHandJointID.ThumbTip,
+        XRHandJointID.IndexMetacarpal, XRHandJointID.IndexProximal, XRHandJointID.IndexIntermediate, XRHandJointID.IndexDistal, XRHandJointID.IndexTip,
+        XRHandJointID.MiddleMetacarpal, XRHandJointID.MiddleProximal, XRHandJointID.MiddleIntermediate, XRHandJointID.MiddleDistal, XRHandJointID.MiddleTip,
+        XRHandJointID.RingMetacarpal, XRHandJointID.RingProximal, XRHandJointID.RingIntermediate, XRHandJointID.RingDistal, XRHandJointID.RingTip,
+        XRHandJointID.LittleMetacarpal, XRHandJointID.LittleProximal, XRHandJointID.LittleIntermediate, XRHandJointID.LittleDistal, XRHandJointID.LittleTip
+    };
 
     struct BonePair
     {
@@ -80,7 +94,7 @@ public class HandVisualizer : MonoBehaviour
 
     Material CreateMaterial(Color color)
     {
-        Shader shader = Shader.Find("Sprites/Default");
+        Shader shader = Shader.Find("Unlit/Color");
         if (shader == null) shader = Shader.Find("UI/Default");
         var mat = new Material(shader);
         mat.color = color;
@@ -116,6 +130,8 @@ public class HandVisualizer : MonoBehaviour
             lr.endWidth = BoneWidth;
             lr.positionCount = 2;
             lr.useWorldSpace = true;
+            lr.numCapVertices = 4;
+            lr.numCornerVertices = 4;
             bones[i] = lr;
         }
 
@@ -134,32 +150,36 @@ public class HandVisualizer : MonoBehaviour
             _xrHandSub = subs.Count > 0 ? subs[0] : null;
         }
 
-        if (_xrHandSub == null || !_xrHandSub.running)
+        bool leftTracked = false;
+        bool rightTracked = false;
+
+        if (_xrHandSub != null && _xrHandSub.running)
         {
-            _leftRoot.SetActive(false);
-            _rightRoot.SetActive(false);
-            LeftHandTracked = false;
-            RightHandTracked = false;
-            return;
+            leftTracked = UpdateXRHand(_xrHandSub.leftHand, _leftRoot, _leftJoints, _leftBones, true);
+            rightTracked = UpdateXRHand(_xrHandSub.rightHand, _rightRoot, _rightJoints, _rightBones, false);
         }
 
-        UpdateHand(_xrHandSub.leftHand, _leftRoot, _leftJoints, _leftBones, true);
-        UpdateHand(_xrHandSub.rightHand, _rightRoot, _rightJoints, _rightBones, false);
+        // Fallback: if XR Hands is not active/tracked, visualize from PICO native joints.
+        if (!leftTracked)
+            leftTracked = UpdatePicoNativeHand(true, _leftRoot, _leftJoints, _leftBones);
+        if (!rightTracked)
+            rightTracked = UpdatePicoNativeHand(false, _rightRoot, _rightJoints, _rightBones);
+
+        LeftHandTracked = leftTracked;
+        RightHandTracked = rightTracked;
     }
 
     static int JointToIndex(XRHandJointID id) => (int)id - (int)XRHandJointID.Wrist;
 
-    void UpdateHand(XRHand hand, GameObject root, Transform[] joints, LineRenderer[] bones, bool isLeft)
+    bool UpdateXRHand(XRHand hand, GameObject root, Transform[] joints, LineRenderer[] bones, bool isLeft)
     {
-        bool tracked = hand.isTracked;
-        root.SetActive(tracked);
+        if (!hand.isTracked)
+        {
+            root.SetActive(false);
+            return false;
+        }
 
-        if (isLeft)
-            LeftHandTracked = tracked;
-        else
-            RightHandTracked = tracked;
-
-        if (!tracked) return;
+        int validJointCount = 0;
 
         for (int i = 0; i < joints.Length; i++)
         {
@@ -168,6 +188,8 @@ public class HandVisualizer : MonoBehaviour
             if (joint.TryGetPose(out Pose pose))
             {
                 joints[i].position = pose.position;
+                joints[i].rotation = pose.rotation;
+                validJointCount++;
                 if (jointID == XRHandJointID.IndexTip)
                 {
                     if (isLeft)
@@ -178,6 +200,16 @@ public class HandVisualizer : MonoBehaviour
             }
         }
 
+        bool tracked = validJointCount >= 6;
+        root.SetActive(tracked);
+        if (!tracked) return false;
+
+        UpdateBones(joints, bones);
+        return true;
+    }
+
+    void UpdateBones(Transform[] joints, LineRenderer[] bones)
+    {
         for (int i = 0; i < BoneConnections.Length; i++)
         {
             int fromIdx = JointToIndex(BoneConnections[i].from);
@@ -188,6 +220,65 @@ public class HandVisualizer : MonoBehaviour
                 bones[i].SetPosition(1, joints[toIdx].position);
             }
         }
+    }
+
+    bool UpdatePicoNativeHand(bool isLeft, GameObject root, Transform[] joints, LineRenderer[] bones)
+    {
+#if PICO_XR
+        try
+        {
+            var ht = isLeft ? HandType.HandLeft : HandType.HandRight;
+            var jl = new HandJointLocations();
+            if (!PXR_Plugin.HandTracking.UPxr_GetHandTrackerJointLocations(ht, ref jl) || jl.jointLocations == null)
+            {
+                root.SetActive(false);
+                return false;
+            }
+
+            int validJointCount = 0;
+            int n = Mathf.Min(jl.jointLocations.Length, PxrJointToXrJoint.Length);
+            for (int i = 0; i < n; i++)
+            {
+                var j = jl.jointLocations[i];
+                ulong status = (ulong)j.locationStatus;
+                bool posValid = (status & (ulong)HandLocationStatus.PositionValid) != 0;
+                bool rotValid = (status & (ulong)HandLocationStatus.OrientationValid) != 0;
+                if (!posValid && !rotValid) continue;
+
+                int idx = JointToIndex(PxrJointToXrJoint[i]);
+                if (idx < 0 || idx >= joints.Length) continue;
+
+                var pos = j.pose.Position.ToVector3();
+                var rot = j.pose.Orientation.ToQuat();
+                joints[idx].position = pos;
+                joints[idx].rotation = rot;
+                validJointCount++;
+
+                if (PxrJointToXrJoint[i] == XRHandJointID.IndexTip)
+                {
+                    if (isLeft)
+                        LeftIndexTipPosition = pos;
+                    else
+                        RightIndexTipPosition = pos;
+                }
+            }
+
+            bool tracked = validJointCount >= 6;
+            root.SetActive(tracked);
+            if (!tracked) return false;
+
+            UpdateBones(joints, bones);
+            return true;
+        }
+        catch
+        {
+            root.SetActive(false);
+            return false;
+        }
+#else
+        root.SetActive(false);
+        return false;
+#endif
     }
 
     void OnDestroy()

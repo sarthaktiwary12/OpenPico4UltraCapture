@@ -63,7 +63,7 @@ Every TELUS requirement mapped to how this pipeline delivers it:
 └─────────────────────────────────────────────────────────┘  │
 ```
 
-**Key insight**: Video comes from PICO's OS-level spatial video recorder (which captures from the physical 32MP cameras — this IS the egocentric view). Sensor data comes from our Unity app. They're synchronized via a clap gesture that's detectable in both streams.
+**Key insight**: Video (`pov_video.mp4`) and sensor streams are started/stopped by the same Unity capture flow, then aligned with clap/beep sync markers.
 
 ---
 
@@ -76,6 +76,16 @@ Every TELUS requirement mapped to how this pipeline delivers it:
 - Hand Tracking: Settings → Developer → Hand Tracking → ON
 - USB Debugging: Settings → Developer → USB Debugging → ON
 - Recording quality: Settings → General → Screencasting & Recording → max
+- One-time MediaProjection allow (required for in-app `pov_video.mp4` recording):
+  ```bash
+  adb shell cmd appops set com.sentientx.datacapture PROJECT_MEDIA allow
+  ```
+- Verify system hand tracking switch (must be `1`):
+  ```bash
+  adb shell settings get global sys_tracking_hand_enable
+  # if needed:
+  adb shell settings put global sys_tracking_hand_enable 1
+  ```
 
 ### 2. Unity Project
 
@@ -102,7 +112,7 @@ XR Origin (with PXR_Manager)
 ├── [GameObject] SyncManager (ref → SensorRecorder)
 ├── [GameObject] SpatialMeshCapture (ref → SensorRecorder)
 ├── [GameObject] PXR_SpatialMeshManager (PICO Building Block)
-└── Canvas (World Space, follows head)
+└── Canvas (World Space, anchored in room at app start)
     └── RecordingController (refs → all above + UI elements)
         ├── Panel: Task Select (dropdowns + Start button)
         ├── Panel: Recording (status, timer, sync, hands %, buttons)
@@ -127,45 +137,59 @@ sudo apt install ffmpeg  # or brew install ffmpeg
 1. PUT ON HEADSET in passthrough mode
    Ensure good, even lighting. Clear personal items.
 
-2. START SPATIAL VIDEO RECORDING
-   Hold the capture button on the right controller
-   (or via Quick Settings → Record)
+2. OPEN the DataCapture app (our Unity app)
+   The app starts/stops `pov_video.mp4` together with sensor recording.
 
-3. OPEN the DataCapture app (our Unity app)
+3. SELECT scenario + task type from dropdowns
 
-4. SELECT scenario + task type from dropdowns
-
-5. TAP "Start Session"
+4. TAP "Start Session"
    → Sensor recording begins
    → Status shows "RECORDING"
-   → Preflight health check runs (hand tracking + IMU gravity); if degraded, warning shown before continue
+   → Preflight health check runs (hand tracking + IMU gravity)
+   → Start is blocked when real hand tracking is unavailable (prevents unusable sessions)
 
-6. CLAP HANDS TOGETHER (sync gesture)
+5. CLAP HANDS TOGETHER (sync gesture)
    → App detects clap, plays audio beep
    → "✓ Sync OK" appears on screen
    → This syncs video↔sensor timeline
 
-7. TAP "Start Task"
+6. TAP "Start Task"
    → Logs task_start timestamp
 
-8. PERFORM THE TASK
+7. PERFORM THE TASK
    ⚠ SLOW, DELIBERATE, ROBOT-LIKE MOVEMENTS
    ⚠ KEEP BOTH HANDS VISIBLE IN CAMERA VIEW
    ⚠ AVOID FAST HEAD MOVEMENTS
    Target: ~2 minutes
 
-9. TAP "End Task"
+8. TAP "End Task"
    → Logs task_end timestamp
 
-10. TAP "Stop Session"
+9. TAP "Stop Session"
     → On-device validation runs
     → Review the pass/fail checklist
 
-11. STOP SPATIAL VIDEO RECORDING
-    Hold capture button again
-
-12. REVIEW VALIDATION REPORT
+10. REVIEW VALIDATION REPORT
     Fix any issues, re-record if needed
+```
+
+### ADB Remote Start/Stop (Headset-on-neck testing)
+
+The app can be controlled over ADB without pressing the in-headset button:
+
+```bash
+# Start
+adb shell am broadcast -n com.sentientx.datacapture/.RemoteCommandReceiver \
+  -a com.sentientx.datacapture.CMD --es cmd start
+
+# Stop
+adb shell am broadcast -n com.sentientx.datacapture/.RemoteCommandReceiver \
+  -a com.sentientx.datacapture.CMD --es cmd stop
+
+# Status
+adb shell am broadcast -n com.sentientx.datacapture/.RemoteCommandReceiver \
+  -a com.sentientx.datacapture.CMD --es cmd status
+adb shell "cat /sdcard/Android/data/com.sentientx.datacapture/files/record/remote_status.txt"
 ```
 
 ### Task Checklist (per TELUS spec)

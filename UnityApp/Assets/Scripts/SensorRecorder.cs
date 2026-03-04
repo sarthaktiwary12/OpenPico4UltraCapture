@@ -59,8 +59,9 @@ public class SensorRecorder : MonoBehaviour
     private long _handFallbackFrameCount;
     private long _imuFallbackFrameCount;
     private readonly List<InputDevice> _tmpDevices = new List<InputDevice>(4);
-    private readonly List<Bone> _tmpBones = new List<Bone>(8);
     private readonly List<XRHandSubsystem> _tmpHandSubsystems = new List<XRHandSubsystem>(4);
+    private XRHandSubsystem _xrHandSubsystem;
+    private long _xrHandSubsystemLastLookupFrame = -1;
 
     static readonly string[] JN = {
         "Palm","Wrist","ThumbMeta","ThumbProx","ThumbDist","ThumbTip",
@@ -68,6 +69,24 @@ public class SensorRecorder : MonoBehaviour
         "MiddleMeta","MiddleProx","MiddleInter","MiddleDist","MiddleTip",
         "RingMeta","RingProx","RingInter","RingDist","RingTip",
         "LittleMeta","LittleProx","LittleInter","LittleDist","LittleTip"
+    };
+
+    static readonly XRHandJointID[] XRJointIds = {
+        XRHandJointID.Palm, XRHandJointID.Wrist,
+        XRHandJointID.ThumbMetacarpal, XRHandJointID.ThumbProximal, XRHandJointID.ThumbDistal, XRHandJointID.ThumbTip,
+        XRHandJointID.IndexMetacarpal, XRHandJointID.IndexProximal, XRHandJointID.IndexIntermediate, XRHandJointID.IndexDistal, XRHandJointID.IndexTip,
+        XRHandJointID.MiddleMetacarpal, XRHandJointID.MiddleProximal, XRHandJointID.MiddleIntermediate, XRHandJointID.MiddleDistal, XRHandJointID.MiddleTip,
+        XRHandJointID.RingMetacarpal, XRHandJointID.RingProximal, XRHandJointID.RingIntermediate, XRHandJointID.RingDistal, XRHandJointID.RingTip,
+        XRHandJointID.LittleMetacarpal, XRHandJointID.LittleProximal, XRHandJointID.LittleIntermediate, XRHandJointID.LittleDistal, XRHandJointID.LittleTip
+    };
+
+    static readonly float[] DefaultJointRadius = {
+        0.0240f, 0.0200f,
+        0.0160f, 0.0140f, 0.0120f, 0.0100f,
+        0.0160f, 0.0140f, 0.0120f, 0.0100f, 0.0080f,
+        0.0160f, 0.0140f, 0.0120f, 0.0100f, 0.0080f,
+        0.0160f, 0.0140f, 0.0120f, 0.0100f, 0.0080f,
+        0.0160f, 0.0140f, 0.0120f, 0.0100f, 0.0080f
     };
 
     struct HandSampleStats
@@ -231,7 +250,8 @@ public class SensorRecorder : MonoBehaviour
         if (right.rotCount > 0) { rotVar += ComputeRotationVariance(right); rotVarCount++; }
         LastHandRotationVariance = rotVarCount > 0 ? rotVar / rotVarCount : 0f;
         LastRealHandJointCount = realJointCount;
-        LastHandTrackingReal = trackedHands == 2 && realJointCount >= 40 && LastHandRotationVariance > 0.0005f;
+        // A single tracked hand still provides real egocentric supervision data.
+        LastHandTrackingReal = realJointCount >= 20 && trackedHands >= 1;
 
         if (LastHandTrackingReal)
         {
@@ -239,7 +259,7 @@ public class SensorRecorder : MonoBehaviour
             if (_loggedHandFallback)
             {
                 _loggedHandFallback = false;
-                LogAction("hand_tracking_recovered", "both_hands", $"real_joint_count={realJointCount}");
+                LogAction("hand_tracking_recovered", "xr_hands", $"real_joint_count={realJointCount};tracked_hands={trackedHands}");
             }
         }
         else
@@ -255,7 +275,11 @@ public class SensorRecorder : MonoBehaviour
 
     HandSampleStats SampleHand(string label)
     {
-        var stats = new HandSampleStats();
+        // Prefer XR Hands subsystem. It maps to true tracked joints, unlike generic
+        // InputDevice.handData which can mirror controller-style pseudo hands.
+        var stats = TrySampleXRHandSubsystem(label);
+        if (stats.wroteAny) return stats;
+
 #if PICO_XR
         try
         {
@@ -280,11 +304,6 @@ public class SensorRecorder : MonoBehaviour
         {
         }
 #endif
-        if (!stats.wroteAny)
-        {
-            stats = TrySampleXRHand(label);
-        }
-
         if (stats.wroteAny) return stats;
 
         // Fallback: synthesize a full hand skeleton from controller pose so the stream keeps schema consistency.
@@ -306,6 +325,60 @@ public class SensorRecorder : MonoBehaviour
         WriteControllerHandSkeletonFallback(label, cp, cq);
         stats.wroteAny = true;
         stats.usedRealTracking = false;
+        return stats;
+    }
+
+    bool TryGetRunningXRHandSubsystem(out XRHandSubsystem subsystem)
+    {
+        // Refresh lookup every ~90 capture frames (~3s at 30Hz) in case subsystem state changes.
+        bool needsLookup = _xrHandSubsystem == null ||
+                           !_xrHandSubsystem.running ||
+                           (FrameIndex - _xrHandSubsystemLastLookupFrame) >= 90;
+
+        if (needsLookup)
+        {
+            _xrHandSubsystemLastLookupFrame = FrameIndex;
+            _tmpHandSubsystems.Clear();
+            SubsystemManager.GetSubsystems(_tmpHandSubsystems);
+            _xrHandSubsystem = null;
+            for (int i = 0; i < _tmpHandSubsystems.Count; i++)
+            {
+                var sub = _tmpHandSubsystems[i];
+                if (sub != null && sub.running)
+                {
+                    _xrHandSubsystem = sub;
+                    break;
+                }
+            }
+        }
+
+        subsystem = _xrHandSubsystem;
+        return subsystem != null && subsystem.running;
+    }
+
+    HandSampleStats TrySampleXRHandSubsystem(string label)
+    {
+        var stats = new HandSampleStats();
+        if (!TryGetRunningXRHandSubsystem(out var subsystem))
+            return stats;
+
+        XRHand hand = label == "left" ? subsystem.leftHand : subsystem.rightHand;
+        if (!hand.isTracked)
+            return stats;
+
+        for (int i = 0; i < XRJointIds.Length; i++)
+        {
+            var joint = hand.GetJoint(XRJointIds[i]);
+            if (!joint.TryGetPose(out Pose pose))
+                continue;
+
+            float radius = DefaultJointRadius[i];
+            if (joint.TryGetRadius(out float trackedRadius) && trackedRadius > 0f)
+                radius = trackedRadius;
+
+            WriteHandJoint(label, i, JN[i], pose.position, pose.rotation, radius, true, ref stats);
+        }
+
         return stats;
     }
 
@@ -512,57 +585,6 @@ public class SensorRecorder : MonoBehaviour
         return hasA || hasG;
     }
 
-    HandSampleStats TrySampleXRHand(string label)
-    {
-        var stats = new HandSampleStats();
-        var handChar = label == "left"
-            ? InputDeviceCharacteristics.HandTracking | InputDeviceCharacteristics.Left | InputDeviceCharacteristics.TrackedDevice
-            : InputDeviceCharacteristics.HandTracking | InputDeviceCharacteristics.Right | InputDeviceCharacteristics.TrackedDevice;
-
-        _tmpDevices.Clear();
-        InputDevices.GetDevicesWithCharacteristics(handChar, _tmpDevices);
-        if (_tmpDevices.Count == 0) return stats;
-
-        var dev = _tmpDevices[0];
-        if (!dev.isValid) return stats;
-        if (!dev.TryGetFeatureValue(CommonUsages.handData, out Hand handData)) return stats;
-
-        if (handData.TryGetRootBone(out Bone root))
-        {
-            if (root.TryGetPosition(out Vector3 rp) && root.TryGetRotation(out Quaternion rq))
-            {
-                WriteHandJoint(label, 1, "Wrist", rp, rq, 0.0200f, true, ref stats);
-                var palm = rp + rq * new Vector3(0f, 0f, 0.035f);
-                WriteHandJoint(label, 0, "Palm", palm, rq, 0.0250f, true, ref stats);
-            }
-        }
-
-        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Thumb, 2, 4, ref stats);
-        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Index, 6, 5, ref stats);
-        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Middle, 11, 5, ref stats);
-        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Ring, 16, 5, ref stats);
-        WriteFingerBones(handData, label, UnityEngine.XR.HandFinger.Pinky, 21, 5, ref stats);
-
-        return stats;
-    }
-
-    void WriteFingerBones(Hand handData, string label, UnityEngine.XR.HandFinger finger, int jointStartId, int targetCount, ref HandSampleStats stats)
-    {
-        _tmpBones.Clear();
-        if (!handData.TryGetFingerBones(finger, _tmpBones) || _tmpBones.Count == 0) return;
-
-        int n = Mathf.Min(_tmpBones.Count, targetCount);
-        for (int bi = 0; bi < n; bi++)
-        {
-            var b = _tmpBones[bi];
-            if (!b.TryGetPosition(out Vector3 p) || !b.TryGetRotation(out Quaternion q)) continue;
-            int jid = jointStartId + bi;
-            string jn = jid < JN.Length ? JN[jid] : $"J{jid}";
-            float r = Mathf.Max(0.0075f, 0.018f - bi * 0.0022f);
-            WriteHandJoint(label, jid, jn, p, q, r, true, ref stats);
-        }
-    }
-
     void WriteControllerHandSkeletonFallback(string label, Vector3 wristPos, Quaternion wristRot)
     {
         void WriteJoint(int id, string name, Vector3 localPos, float radius)
@@ -650,17 +672,37 @@ public class SensorRecorder : MonoBehaviour
         _tmpHandSubsystems.Clear();
         SubsystemManager.GetSubsystems(_tmpHandSubsystems);
         int runningCount = 0;
+        bool xrTrackedHands = false;
         for (int i = 0; i < _tmpHandSubsystems.Count; i++)
         {
-            if (_tmpHandSubsystems[i] != null && _tmpHandSubsystems[i].running) runningCount++;
+            var sub = _tmpHandSubsystems[i];
+            if (sub == null || !sub.running) continue;
+            runningCount++;
+            xrTrackedHands |= sub.leftHand.isTracked || sub.rightHand.isTracked;
         }
         bool subsystemReady = runningCount > 0;
 
         bool picoSettingReady = false;
+        int nativeTrackedHands = 0;
+#if PICO_XR
+        ActiveInputDevice picoInput = ActiveInputDevice.HeadActive;
+#else
+        string picoInput = "n/a";
+#endif
 #if PICO_XR
         try
         {
             picoSettingReady = PXR_Plugin.HandTracking.UPxr_GetHandTrackerSettingState();
+            picoInput = PXR_Plugin.HandTracking.UPxr_GetHandTrackerActiveInputType();
+            var left = new HandJointLocations();
+            if (PXR_Plugin.HandTracking.UPxr_GetHandTrackerJointLocations(HandType.HandLeft, ref left) &&
+                left.jointLocations != null && left.jointLocations.Length > 0)
+                nativeTrackedHands++;
+
+            var right = new HandJointLocations();
+            if (PXR_Plugin.HandTracking.UPxr_GetHandTrackerJointLocations(HandType.HandRight, ref right) &&
+                right.jointLocations != null && right.jointLocations.Length > 0)
+                nativeTrackedHands++;
         }
         catch
         {
@@ -678,9 +720,10 @@ public class SensorRecorder : MonoBehaviour
         // so this works even when Android permissions aren't formally granted.
         bool granted = RuntimePermissions.HasAnyHandTrackingPermission();
 
-        // Any positive signal means hand tracking should be accessible.
-        bool ok = granted || subsystemReady || picoSettingReady || trackedDevicesPresent;
-        detail = $"perm={granted};subsystems_running={runningCount};tracked_devices={_tmpDevices.Count};pico_setting={picoSettingReady}";
+        // Require evidence of real tracked hands, not just connected devices/permissions.
+        bool nativeHandsTracked = nativeTrackedHands > 0;
+        bool ok = xrTrackedHands || nativeHandsTracked;
+        detail = $"perm={granted};subsystems_running={runningCount};tracked_hands={xrTrackedHands};tracked_devices={_tmpDevices.Count};pico_setting={picoSettingReady};pico_input={picoInput};native_hands={nativeTrackedHands}";
         return ok;
     }
 

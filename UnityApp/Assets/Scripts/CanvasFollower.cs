@@ -1,16 +1,24 @@
 using UnityEngine;
 
 /// <summary>
-/// Keeps a world-space Canvas in front of the user's head.
-/// When the user turns more than <see cref="reTargetAngle"/> degrees away
-/// from the canvas, the canvas smoothly lerps to the new forward direction.
+/// Places a world-space Canvas either once in room space, or continuously in front of the user.
+/// Default behavior is room-anchored so operators can walk to a fixed panel and press RECORD/STOP.
 /// </summary>
 public class CanvasFollower : MonoBehaviour
 {
+    public enum PlacementMode
+    {
+        AnchorInRoom = 0,
+        FollowHead = 1,
+    }
+
+    [Tooltip("AnchorInRoom = place once and keep fixed. FollowHead = keep retargeting with head motion.")]
+    public PlacementMode placementMode = PlacementMode.AnchorInRoom;
+
     [Tooltip("Camera whose forward direction the canvas follows (usually the XR camera).")]
     public Camera targetCamera;
 
-    [Tooltip("Distance in meters the canvas floats in front of the camera.")]
+    [Tooltip("Distance in meters from camera when initial anchor is computed (or while following).")]
     public float followDistance = 2f;
 
     [Tooltip("Vertical offset from the camera (meters). Positive = above eye level.")]
@@ -27,10 +35,19 @@ public class CanvasFollower : MonoBehaviour
 
     private Vector3 _targetPosition;
     private Quaternion _targetRotation;
+    private Vector3 _anchoredPosition;
+    private Quaternion _anchoredRotation;
     private bool _initialized;
+
+    public void ReanchorNow()
+    {
+        _initialized = false;
+    }
 
     void LateUpdate()
     {
+        if (targetCamera == null)
+            targetCamera = Camera.main;
         if (targetCamera == null) return;
 
         Vector3 camPos = targetCamera.transform.position;
@@ -53,7 +70,17 @@ public class CanvasFollower : MonoBehaviour
             _targetRotation = desiredRot;
             transform.position = _targetPosition;
             transform.rotation = _targetRotation;
+            _anchoredPosition = _targetPosition;
+            _anchoredRotation = _targetRotation;
             _initialized = true;
+            return;
+        }
+
+        if (placementMode == PlacementMode.AnchorInRoom)
+        {
+            // Hard-lock transform so no other script/system drift can make UI follow the head.
+            transform.position = _anchoredPosition;
+            transform.rotation = _anchoredRotation;
             return;
         }
 

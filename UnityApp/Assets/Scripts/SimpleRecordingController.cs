@@ -35,7 +35,16 @@ public class SimpleRecordingController : MonoBehaviour
 
     [Header("Hand Visualization")]
     public HandVisualizer handVisualizer;
+    public bool enableHandPinchToggle = false;
+    public bool requireHandNearButtonForPinch = false;
     public float pinchProximityRadius = 0.15f;
+
+    [Header("Capture Guards")]
+    public bool blockStartWhenHandTrackingUnavailable = true;
+
+    [Header("Remote Control")]
+    public bool enableAdbRemoteControl = true;
+    public float remoteCommandPollInterval = 0.25f;
 
     private bool _recording;
     private bool _handNearButton;
@@ -49,11 +58,16 @@ public class SimpleRecordingController : MonoBehaviour
     private bool _enterpriseRecordingToggled;
     private string _directVideoPath;
     private bool _projectionStartConfirmed;
+    private bool _projectionRequested;
     private Coroutine _projectionStartWatchdog;
-    private bool _preflightOverrideArmed;
-    private float _preflightOverrideUntilS;
     private bool _stallDetectedLogged;
     private string _pendingPreflightResult;
+    private float _nextRemotePollTime;
+    private string _remoteCmdPath;
+    private string _remoteStatusPath;
+#if UNITY_ANDROID && !UNITY_EDITOR
+    private AndroidJavaObject _wakeLock;
+#endif
 
     // Hand tracking live status (shown on screen in idle state)
     private string _handStatus = "waiting...";
@@ -68,10 +82,41 @@ public class SimpleRecordingController : MonoBehaviour
         "/sdcard/DCIM"
     };
 
+    void Awake()
+    {
+        // Keep update loop alive for ADB remote control even if focus/user-presence changes.
+        Application.runInBackground = true;
+        Screen.sleepTimeout = SleepTimeout.NeverSleep;
+        TryAcquireWakeLock();
+    }
+
     void Start()
     {
         if (handVisualizer == null)
             handVisualizer = new GameObject("HandVisualizer").AddComponent<HandVisualizer>();
+
+        // Headset-only operation requires pinch as the primary input.
+        if (!enableHandPinchToggle)
+        {
+            enableHandPinchToggle = true;
+            Debug.Log("[Controller] Hand pinch toggle forced ON.");
+        }
+
+        string recordDir = Path.Combine(Application.persistentDataPath, "record");
+        Directory.CreateDirectory(recordDir);
+        _remoteCmdPath = Path.Combine(recordDir, "remote_cmd.txt");
+        _remoteStatusPath = Path.Combine(recordDir, "remote_status.txt");
+
+        // Keep HUD anchored off to the side so it does not sit in the central view.
+        var follower = hudRoot != null ? hudRoot.GetComponent<CanvasFollower>() : null;
+        if (follower != null)
+        {
+            follower.placementMode = CanvasFollower.PlacementMode.AnchorInRoom;
+            if (follower.followDistance < 1.8f) follower.followDistance = 1.8f;
+            if (Mathf.Abs(follower.rightOffset) < 0.01f) follower.rightOffset = 0.85f;
+            if (Mathf.Abs(follower.heightOffset) < 0.01f) follower.heightOffset = -0.10f;
+            follower.ReanchorNow();
+        }
 
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
         SetHudVisible(true);
@@ -135,6 +180,8 @@ public class SimpleRecordingController : MonoBehaviour
                     SetIdle();
                 }
             }
+
+            PollRemoteCommand();
         }
         catch (System.Exception e)
         {
@@ -181,7 +228,7 @@ public class SimpleRecordingController : MonoBehaviour
         }
 
         // --- Hand tracking pinch input ---
-        if (!down)
+        if (!down && enableHandPinchToggle)
             down = CheckHandTrackingPinch();
 
         if (down && !_triggerWasDown)
@@ -311,10 +358,14 @@ public class SimpleRecordingController : MonoBehaviour
 
         if (pinchDetected)
         {
-            if (!IsHandNearButton())
+            _handNearButton = IsHandNearButton();
+            if (requireHandNearButtonForPinch && !_handNearButton)
             {
                 if (_handDiagLogCount < 10)
+                {
+                    _handDiagLogCount++;
                     Debug.Log($"[Hand] PINCH via {_handMethod} suppressed (hand not near button)");
+                }
                 return false;
             }
             if (_handDiagLogCount < 10)
@@ -442,6 +493,89 @@ public class SimpleRecordingController : MonoBehaviour
         return Vector3.Distance(pose.position, btnPos) < pinchProximityRadius;
     }
 
+    void PollRemoteCommand()
+    {
+        if (!enableAdbRemoteControl) return;
+        if (Time.unscaledTime < _nextRemotePollTime) return;
+        _nextRemotePollTime = Time.unscaledTime + Mathf.Max(0.05f, remoteCommandPollInterval);
+        if (string.IsNullOrEmpty(_remoteCmdPath) || !File.Exists(_remoteCmdPath)) return;
+
+        string cmd;
+        try
+        {
+            cmd = File.ReadAllText(_remoteCmdPath).Trim().ToLowerInvariant();
+            File.Delete(_remoteCmdPath);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Remote] Failed to read command: {e.Message}");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(cmd)) return;
+        HandleRemoteCommand(cmd);
+    }
+
+    // Entry-point for Android BroadcastReceiver (UnitySendMessage target).
+    public void OnRemoteCommandFromAndroid(string command)
+    {
+        if (!enableAdbRemoteControl) return;
+        if (string.IsNullOrEmpty(command)) return;
+
+        var cmd = command.Trim().ToLowerInvariant();
+        HandleRemoteCommand(cmd);
+    }
+
+    void HandleRemoteCommand(string cmd)
+    {
+        if (string.IsNullOrEmpty(cmd)) return;
+        Debug.Log($"[Remote] Command: {cmd}");
+
+        switch (cmd)
+        {
+            case "start":
+                if (!_recording && PreflightAllowsStart())
+                    StartRecording();
+                break;
+            case "stop":
+                if (_recording)
+                    StopRecording();
+                break;
+            case "toggle":
+                OnToggle();
+                break;
+            case "status":
+                WriteRemoteStatus();
+                break;
+            case "reanchor":
+                {
+                    var follower = hudRoot != null ? hudRoot.GetComponent<CanvasFollower>() : null;
+                    follower?.ReanchorNow();
+                    WriteRemoteStatus();
+                    break;
+                }
+            default:
+                Debug.LogWarning($"[Remote] Unknown command: {cmd}");
+                break;
+        }
+    }
+
+    void WriteRemoteStatus()
+    {
+        if (string.IsNullOrEmpty(_remoteStatusPath)) return;
+        try
+        {
+            long frames = sensorRecorder != null ? sensorRecorder.FrameIndex : -1;
+            string session = string.IsNullOrEmpty(_sessionDir) ? "none" : _sessionDir;
+            string text = $"recording={_recording}\nframes={frames}\nsession={session}\nhand_near_button={_handNearButton}\n";
+            File.WriteAllText(_remoteStatusPath, text);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Remote] Failed to write status: {e.Message}");
+        }
+    }
+
     void OnToggle()
     {
         Debug.Log("[Controller] Toggle pressed!");
@@ -459,30 +593,37 @@ public class SimpleRecordingController : MonoBehaviour
     {
         if (sensorRecorder == null) return true;
 
+        bool handReady = sensorRecorder.IsHandTrackingReadyForCapture(out string handDetail);
+        if (blockStartWhenHandTrackingUnavailable && !handReady)
+        {
+            _pendingPreflightResult = $"blocked;hand={handDetail}";
+            Debug.LogWarning($"[Controller] Start blocked: hand tracking unavailable ({handDetail})");
+            SetStatus("Hand tracking not ready.\nEnable hands in PICO system settings and keep hands in view.");
+            return false;
+        }
+
         bool healthy = sensorRecorder.RunPreflightHealthCheck(out string detail);
         if (healthy)
         {
-            _preflightOverrideArmed = false;
             _pendingPreflightResult = $"ok;{detail}";
             return true;
         }
 
-        if (_preflightOverrideArmed && Time.time <= _preflightOverrideUntilS)
-        {
-            _pendingPreflightResult = $"override;{detail}";
-            _preflightOverrideArmed = false;
-            return true;
-        }
-
-        _preflightOverrideArmed = true;
-        _preflightOverrideUntilS = Time.time + 15f;
-        Debug.LogWarning($"[Controller] Preflight blocked: {detail}");
-        SetStatus("Preflight Warning\nHand tracking or IMU quality is degraded.\nPress RECORD again within 15s to continue anyway.");
-        return false;
+        // Non-blocking: warn but continue so start/stop stays single-press.
+        _pendingPreflightResult = $"warn;{detail}";
+        Debug.LogWarning($"[Controller] Preflight warning (continuing): {detail}");
+        return true;
     }
 
     void StartRecording()
     {
+        if (sensorRecorder == null)
+        {
+            Debug.LogError("[Controller] sensorRecorder is not assigned.");
+            SetStatus("ERROR\nSensorRecorder missing");
+            return;
+        }
+
         try
         {
             // Start sensor recording
@@ -490,8 +631,8 @@ public class SimpleRecordingController : MonoBehaviour
             _sessionDir = sensorRecorder.GetSessionDir();
             if (!string.IsNullOrEmpty(_pendingPreflightResult))
             {
-                if (_pendingPreflightResult.StartsWith("override;"))
-                    sensorRecorder.LogAction("preflight_override", "continue_anyway", _pendingPreflightResult.Substring("override;".Length));
+                if (_pendingPreflightResult.StartsWith("warn;"))
+                    sensorRecorder.LogAction("preflight_warning", "health_check", _pendingPreflightResult.Substring("warn;".Length));
                 else
                     sensorRecorder.LogAction("preflight_ok", "health_check", _pendingPreflightResult);
                 _pendingPreflightResult = string.Empty;
@@ -510,7 +651,6 @@ public class SimpleRecordingController : MonoBehaviour
             _recording = true;
             _startTime = Time.time;
             _stallDetectedLogged = false;
-            _preflightOverrideArmed = false;
 
             if (txtButtonLabel != null) txtButtonLabel.text = "STOP";
             if (btnImage != null) btnImage.color = new Color(0.8f, 0.2f, 0.2f, 1f);
@@ -522,6 +662,21 @@ public class SimpleRecordingController : MonoBehaviour
         catch (System.Exception e)
         {
             Debug.LogError("[Controller] Failed to start recording: " + e.Message);
+            if (sensorRecorder.IsRecording)
+            {
+                try
+                {
+                    StopVideoRecording();
+                    bodyTrackingRecorder?.StopCapture();
+                    spatialMeshCapture?.StopCapture();
+                    sensorRecorder.StopSession("session_end_crash", "reason=start_exception");
+                }
+                catch (System.Exception cleanupErr)
+                {
+                    Debug.LogWarning("[Controller] Start failure cleanup error: " + cleanupErr.Message);
+                }
+            }
+            _recording = false;
             SetStatus("ERROR\n" + e.Message);
         }
     }
@@ -579,10 +734,12 @@ public class SimpleRecordingController : MonoBehaviour
     {
         _videoBackend = "none";
         _projectionStartConfirmed = false;
+        _projectionRequested = false;
 
         if (androidScreenRecorder != null && androidScreenRecorder.IsSupported && androidScreenRecorder.StartRecording(_directVideoPath))
         {
             _videoBackend = "android_projection";
+            _projectionRequested = true;
             sensorRecorder.LogAction("video_start", _videoBackend, "pending");
             if (_projectionStartWatchdog != null) StopCoroutine(_projectionStartWatchdog);
             _projectionStartWatchdog = StartCoroutine(WaitForProjectionStartOrFallback());
@@ -646,16 +803,10 @@ public class SimpleRecordingController : MonoBehaviour
         }
 
         sensorRecorder.LogAction("video_start_timeout", _videoBackend, "projection_not_started_within_6s");
-        if (TryStartVideoShellBroadcast())
-        {
-            _videoBackend = "shell_broadcast";
-            sensorRecorder.LogAction("video_start", _videoBackend, "ok_after_projection_fail");
-        }
-        else
-        {
-            _videoBackend = "none";
-            sensorRecorder.LogAction("video_start", _videoBackend, "failed_after_projection_fail");
-        }
+        // Keep android_projection backend after timeout. On some firmware builds the "started"
+        // callback can be delayed/lost even though MediaProjection is active; stopping projection
+        // explicitly at session end produces a finalized mp4.
+        sensorRecorder.LogAction("video_start", _videoBackend, "pending_after_timeout");
 
         _projectionStartWatchdog = null;
     }
@@ -672,8 +823,13 @@ public class SimpleRecordingController : MonoBehaviour
 
         if (_videoBackend == "android_projection")
         {
-            bool projectionWasRecording = _projectionStartConfirmed || (androidScreenRecorder != null && androidScreenRecorder.IsRecording);
+            bool projectionFilePresent = !string.IsNullOrEmpty(_directVideoPath) && File.Exists(_directVideoPath);
+            bool projectionWasRecording = _projectionRequested ||
+                                          _projectionStartConfirmed ||
+                                          (androidScreenRecorder != null && androidScreenRecorder.IsRecording) ||
+                                          projectionFilePresent;
             stopped = projectionWasRecording && androidScreenRecorder != null && androidScreenRecorder.StopRecording();
+            _projectionRequested = false;
         }
 
         if (EnableEnterpriseRecorder && _videoBackend == "enterprise_record")
@@ -1055,6 +1211,8 @@ public class SimpleRecordingController : MonoBehaviour
 
     void OnApplicationPause(bool pause)
     {
+        if (!pause)
+            TryAcquireWakeLock();
         if (_recording && sensorRecorder != null)
             sensorRecorder.LogAction(pause ? "app_pause" : "app_resume", "lifecycle", pause ? "true" : "false");
     }
@@ -1067,6 +1225,7 @@ public class SimpleRecordingController : MonoBehaviour
 
     void OnApplicationQuit()
     {
+        ReleaseWakeLock();
         if (!_recording || sensorRecorder == null) return;
 
         try
@@ -1082,6 +1241,72 @@ public class SimpleRecordingController : MonoBehaviour
         }
     }
 
+    void OnDestroy()
+    {
+        ReleaseWakeLock();
+    }
+
+    void TryAcquireWakeLock()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+            using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+            if (activity == null) return;
+
+            // Keep display active while the app is running in foreground.
+            using (var window = activity.Call<AndroidJavaObject>("getWindow"))
+            using (var lp = new AndroidJavaClass("android.view.WindowManager$LayoutParams"))
+            {
+                int flagKeepScreenOn = lp.GetStatic<int>("FLAG_KEEP_SCREEN_ON");
+                window?.Call("addFlags", flagKeepScreenOn);
+            }
+
+            if (_wakeLock != null)
+            {
+                bool held = false;
+                try { held = _wakeLock.Call<bool>("isHeld"); } catch { held = false; }
+                if (held) return;
+            }
+
+            using var powerManager = activity.Call<AndroidJavaObject>("getSystemService", "power");
+            if (powerManager == null) return;
+            using var pmClass = new AndroidJavaClass("android.os.PowerManager");
+            int partialWakeLock = pmClass.GetStatic<int>("PARTIAL_WAKE_LOCK");
+            _wakeLock = powerManager.Call<AndroidJavaObject>("newWakeLock", partialWakeLock, "OpenPicoCapture:WakeLock");
+            if (_wakeLock == null) return;
+            _wakeLock.Call("setReferenceCounted", false);
+            _wakeLock.Call("acquire");
+            Debug.Log("[Controller] Wake lock acquired.");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Controller] Wake lock acquire failed: {e.Message}");
+        }
+#endif
+    }
+
+    void ReleaseWakeLock()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        if (_wakeLock == null) return;
+        try
+        {
+            bool held = false;
+            try { held = _wakeLock.Call<bool>("isHeld"); } catch { held = false; }
+            if (held)
+                _wakeLock.Call("release");
+            _wakeLock.Dispose();
+            _wakeLock = null;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Controller] Wake lock release failed: {e.Message}");
+        }
+#endif
+    }
+
     string BuildQualityFooter()
     {
         if (sensorRecorder == null) return "Quality: unavailable";
@@ -1095,7 +1320,11 @@ public class SimpleRecordingController : MonoBehaviour
     void SetIdle()
     {
         SetHudVisible(true);
-        string hint = _handNearButton ? "Pinch to record!" : "Move hand to button";
+        string hint;
+        if (requireHandNearButtonForPinch)
+            hint = _handNearButton ? "Pinch to record!" : "Move hand to button";
+        else
+            hint = "Pinch anywhere or press A";
         SetStatus($"{hint}\nHands: {_handStatus}");
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);

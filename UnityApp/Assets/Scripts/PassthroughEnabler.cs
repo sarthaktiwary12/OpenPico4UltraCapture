@@ -5,7 +5,11 @@ using UnityEngine.XR;
 
 public class PassthroughEnabler : MonoBehaviour
 {
+    [Tooltip("Enable on app start so the POV recording captures real camera passthrough.")]
+    public bool enableOnStart = false;
+
     private bool _enabled;
+    private Coroutine _pendingEnable;
 
     void Start()
     {
@@ -16,22 +20,53 @@ public class PassthroughEnabler : MonoBehaviour
             cam.backgroundColor = new Color(0, 0, 0, 0);
         }
 
-        StartCoroutine(EnablePassthroughOnceWhenXRReady());
+        if (!enableOnStart)
+        {
+            Debug.Log("[Passthrough] Disabled on start.");
+            return;
+        }
+
+        QueueEnableWhenReady();
     }
 
-    private IEnumerator EnablePassthroughOnceWhenXRReady()
+    void OnApplicationPause(bool pause)
     {
-        // Avoid repeated toggles that can trigger runtime tracking restarts.
-        const float timeoutSeconds = 8f;
+        if (!pause)
+            QueueEnableWhenReady();
+    }
+
+    void OnApplicationFocus(bool hasFocus)
+    {
+        if (hasFocus)
+            QueueEnableWhenReady();
+    }
+
+    private void QueueEnableWhenReady()
+    {
+        if (_enabled || !enableOnStart || _pendingEnable != null)
+            return;
+        _pendingEnable = StartCoroutine(EnablePassthroughWhenXRReady());
+    }
+
+    private IEnumerator EnablePassthroughWhenXRReady()
+    {
+        // Wait for XR runtime instead of forcing passthrough during inactive/sleeping states.
         float waited = 0f;
-        while (!XRSettings.isDeviceActive && waited < timeoutSeconds)
+        while (!XRSettings.isDeviceActive)
         {
+            if (waited > 30f)
+            {
+                Debug.LogWarning("[Passthrough] XR inactive for 30s; skipping enable attempt.");
+                _pendingEnable = null;
+                yield break;
+            }
             waited += 0.25f;
             yield return new WaitForSeconds(0.25f);
         }
 
         yield return new WaitForSeconds(0.25f);
         TryEnableOpenXRPassthrough();
+        _pendingEnable = null;
     }
 
     private void TryEnableOpenXRPassthrough()
