@@ -14,16 +14,17 @@ using Unity.XR.PXR;
 
 public class SimpleRecordingController : MonoBehaviour
 {
-    // Enterprise recorder toggle can crash/steal focus on some firmware variants.
-    // Keep disabled for stable in-app capture flow.
-    const bool EnableEnterpriseRecorder = false;
-
     [Header("Systems")]
     public SensorRecorder sensorRecorder;
     public SyncManager syncManager;
     public SpatialMeshCapture spatialMeshCapture;
     public BodyTrackingRecorder bodyTrackingRecorder;
-    public AndroidScreenRecorder androidScreenRecorder;
+    public CameraPermissionManager cameraPermissionManager;
+
+    [Header("Camera2 Settings")]
+    public int videoFps = 30;
+    public int videoBitrateMbps = 8;
+    public int videoIFrameInterval = 1;
 
     [Header("UI")]
     public GameObject hudRoot;
@@ -55,11 +56,9 @@ public class SimpleRecordingController : MonoBehaviour
     private string _sessionDir;
     private long _videoStartTimeMs;
     private string _videoBackend = "none";
-    private bool _enterpriseRecordingToggled;
     private string _directVideoPath;
-    private bool _projectionStartConfirmed;
-    private bool _projectionRequested;
-    private Coroutine _projectionStartWatchdog;
+    private bool _preflightOverrideArmed;
+    private float _preflightOverrideUntilS;
     private bool _stallDetectedLogged;
     private string _pendingPreflightResult;
     private float _nextRemotePollTime;
@@ -71,6 +70,10 @@ public class SimpleRecordingController : MonoBehaviour
 
     // Hand tracking live status (shown on screen in idle state)
     private string _handStatus = "waiting...";
+
+    // Camera2 video capture
+    private Camera2SessionManager _cam2Session;
+    private Camera2VideoRecorder _cam2Recorder;
 
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
@@ -92,6 +95,15 @@ public class SimpleRecordingController : MonoBehaviour
 
     void Start()
     {
+        if (cameraPermissionManager == null)
+            cameraPermissionManager = FindObjectOfType<CameraPermissionManager>();
+        if (cameraPermissionManager == null)
+        {
+            var go = new GameObject("CameraPermissionManager");
+            cameraPermissionManager = go.AddComponent<CameraPermissionManager>();
+            Debug.Log("[Controller] Auto-created CameraPermissionManager");
+        }
+
         if (handVisualizer == null)
             handVisualizer = new GameObject("HandVisualizer").AddComponent<HandVisualizer>();
 
@@ -123,6 +135,64 @@ public class SimpleRecordingController : MonoBehaviour
         SetIdle();
         Debug.Log("[Controller] Ready. Point at button and pinch, or press A/Trigger to toggle recording.");
         StartCoroutine(LogDiagnostics());
+        StartCoroutine(InitHandTrackingRuntime());
+    }
+
+    IEnumerator InitHandTrackingRuntime()
+    {
+        // Wait for XR session to be fully ready before initializing hand tracking
+        yield return new WaitForSeconds(3f);
+
+#if PICO_XR
+        // Request hand tracking permission at runtime
+        try
+        {
+            Debug.Log("[Controller] Requesting hand tracking permission at runtime...");
+            using (var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using (var act = up.GetStatic<AndroidJavaObject>("currentActivity"))
+            {
+                act.Call("requestPermissions", new string[] { "com.picovr.permission.HAND_TRACKING" }, 9999);
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Controller] Hand tracking permission request failed: {e.Message}");
+        }
+
+        yield return new WaitForSeconds(1f);
+
+        // Try to ensure OpenXR HandTracking subsystem is initialized
+        try
+        {
+            var handTrackingType = System.Type.GetType(
+                "UnityEngine.XR.Hands.OpenXR.HandTracking, Unity.XR.Hands");
+            if (handTrackingType != null)
+            {
+                var ensureMethod = handTrackingType.GetMethod("EnsureSubsystemInitialized",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                if (ensureMethod != null)
+                {
+                    ensureMethod.Invoke(null, null);
+                    Debug.Log("[Controller] HandTracking subsystem initialized via runtime call");
+                }
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Controller] HandTracking subsystem init failed: {e.Message}");
+        }
+
+        // Check hand tracking state
+        try
+        {
+            var activeInput = PXR_Plugin.HandTracking.UPxr_GetHandTrackerActiveInputType();
+            Debug.Log($"[Controller] Hand tracking active input: {activeInput}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Controller] Hand tracking state query failed: {e.Message}");
+        }
+#endif
     }
 
     void SetHudVisible(bool visible)
@@ -733,26 +803,16 @@ public class SimpleRecordingController : MonoBehaviour
     void StartVideoRecording()
     {
         _videoBackend = "none";
-        _projectionStartConfirmed = false;
-        _projectionRequested = false;
 
-        if (androidScreenRecorder != null && androidScreenRecorder.IsSupported && androidScreenRecorder.StartRecording(_directVideoPath))
+        // Primary: Camera2 API via questcameralib.aar
+        if (TryStartCamera2Video())
         {
-            _videoBackend = "android_projection";
-            _projectionRequested = true;
-            sensorRecorder.LogAction("video_start", _videoBackend, "pending");
-            if (_projectionStartWatchdog != null) StopCoroutine(_projectionStartWatchdog);
-            _projectionStartWatchdog = StartCoroutine(WaitForProjectionStartOrFallback());
-            return;
-        }
-
-        if (EnableEnterpriseRecorder && TryStartVideoEnterprise())
-        {
-            _videoBackend = "enterprise_record";
+            _videoBackend = "camera2";
             sensorRecorder.LogAction("video_start", _videoBackend, "ok");
             return;
         }
 
+        // Fallback: shell broadcast to system recorder
         if (TryStartVideoShellBroadcast())
         {
             _videoBackend = "shell_broadcast";
@@ -761,80 +821,103 @@ public class SimpleRecordingController : MonoBehaviour
         }
 
         sensorRecorder.LogAction("video_start", "none", "failed");
-        Debug.LogWarning("[Video] Failed to start system recording with all backends.");
+        Debug.LogWarning("[Video] Failed to start recording with all backends.");
     }
 
-    IEnumerator WaitForProjectionStartOrFallback()
+    bool TryStartCamera2Video()
     {
-        const float timeoutS = 6f;
-        float startedAt = Time.realtimeSinceStartup;
-
-        while (Time.realtimeSinceStartup - startedAt < timeoutS)
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
         {
-            if (androidScreenRecorder != null)
+            if (cameraPermissionManager == null || !cameraPermissionManager.IsReady)
             {
-                string evt = androidScreenRecorder.ConsumeLastEvent();
-                if (!string.IsNullOrEmpty(evt))
-                {
-                    if (evt.StartsWith("started:"))
-                    {
-                        _projectionStartConfirmed = true;
-                        sensorRecorder.LogAction("video_start", _videoBackend, "ok");
-                        _projectionStartWatchdog = null;
-                        yield break;
-                    }
-
-                    if (evt.StartsWith("error:"))
-                    {
-                        sensorRecorder.LogAction("video_start", _videoBackend, evt);
-                        break;
-                    }
-                }
-                else if (androidScreenRecorder.ConsumeStartedSignal())
-                {
-                    _projectionStartConfirmed = true;
-                    sensorRecorder.LogAction("video_start", _videoBackend, "ok");
-                    _projectionStartWatchdog = null;
-                    yield break;
-                }
+                Debug.LogWarning("[Video] CameraPermissionManager not ready");
+                return false;
             }
 
-            yield return null;
+            var cameraManager = cameraPermissionManager.CameraManager;
+            string cameraId = cameraPermissionManager.SelectedCameraId;
+            int w = cameraPermissionManager.SelectedWidth;
+            int h = cameraPermissionManager.SelectedHeight;
+
+            if (cameraManager == null || string.IsNullOrEmpty(cameraId))
+            {
+                Debug.LogWarning("[Video] No camera available");
+                return false;
+            }
+
+            // Create recorder
+            _cam2Recorder = new Camera2VideoRecorder();
+            if (!_cam2Recorder.Initialize(w, h, _directVideoPath, videoFps, videoBitrateMbps, videoIFrameInterval))
+            {
+                Debug.LogError("[Video] Camera2 recorder init failed");
+                _cam2Recorder = null;
+                return false;
+            }
+
+            // Open camera session
+            _cam2Session = new Camera2SessionManager();
+            if (!_cam2Session.Open(cameraManager, cameraId, _cam2Recorder.JavaInstance))
+            {
+                Debug.LogError("[Video] Camera2 session open failed");
+                _cam2Recorder.Close();
+                _cam2Recorder = null;
+                _cam2Session = null;
+                return false;
+            }
+
+            // Wait briefly for session to be ready, then start recording
+            StartCoroutine(StartCamera2RecordingDelayed());
+            return true;
         }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"[Video] Camera2 start error: {e.Message}\n{e.StackTrace}");
+            CleanupCamera2();
+            return false;
+        }
+#else
+        return false;
+#endif
+    }
 
-        sensorRecorder.LogAction("video_start_timeout", _videoBackend, "projection_not_started_within_6s");
-        // Keep android_projection backend after timeout. On some firmware builds the "started"
-        // callback can be delayed/lost even though MediaProjection is active; stopping projection
-        // explicitly at session end produces a finalized mp4.
-        sensorRecorder.LogAction("video_start", _videoBackend, "pending_after_timeout");
+    IEnumerator StartCamera2RecordingDelayed()
+    {
+        // Give Camera2 session time to establish
+        yield return new WaitForSeconds(0.5f);
 
-        _projectionStartWatchdog = null;
+        float deadline = Time.realtimeSinceStartup + 3f;
+        while (_cam2Session != null && !_cam2Session.IsOpen && Time.realtimeSinceStartup < deadline)
+            yield return null;
+
+        if (_cam2Recorder != null)
+        {
+            if (_cam2Recorder.StartRecording())
+                Debug.Log("[Video] Camera2 recording started successfully");
+            else
+                Debug.LogError("[Video] Camera2 StartRecording call failed");
+        }
+    }
+
+    void CleanupCamera2()
+    {
+        _cam2Recorder?.Close();
+        _cam2Recorder = null;
+        _cam2Session?.Close();
+        _cam2Session = null;
     }
 
     void StopVideoRecording()
     {
         bool stopped = false;
 
-        if (_projectionStartWatchdog != null)
+        if (_videoBackend == "camera2")
         {
-            StopCoroutine(_projectionStartWatchdog);
-            _projectionStartWatchdog = null;
-        }
-
-        if (_videoBackend == "android_projection")
-        {
-            bool projectionFilePresent = !string.IsNullOrEmpty(_directVideoPath) && File.Exists(_directVideoPath);
-            bool projectionWasRecording = _projectionRequested ||
-                                          _projectionStartConfirmed ||
-                                          (androidScreenRecorder != null && androidScreenRecorder.IsRecording) ||
-                                          projectionFilePresent;
-            stopped = projectionWasRecording && androidScreenRecorder != null && androidScreenRecorder.StopRecording();
-            _projectionRequested = false;
-        }
-
-        if (EnableEnterpriseRecorder && _videoBackend == "enterprise_record")
-        {
-            stopped = TryStopVideoEnterprise();
+            stopped = _cam2Recorder?.StopRecording() ?? false;
+            // Close session after stopping recording
+            _cam2Session?.Close();
+            _cam2Session = null;
+            // Don't close recorder yet — let the file finalize. Close in FindAndCopyVideo.
         }
 
         if (!stopped && _videoBackend == "shell_broadcast")
@@ -842,73 +925,12 @@ public class SimpleRecordingController : MonoBehaviour
             stopped = TryStopVideoShellBroadcast();
         }
 
-        if (!stopped)
+        if (!stopped && _videoBackend != "camera2")
         {
-            // Last-chance stop attempts when start backend is unknown.
-            if (EnableEnterpriseRecorder)
-                stopped = TryStopVideoEnterprise() || TryStopVideoShellBroadcast();
-            else
-                stopped = TryStopVideoShellBroadcast();
+            stopped = TryStopVideoShellBroadcast();
         }
 
         sensorRecorder.LogAction("video_stop", _videoBackend, stopped ? "ok" : "failed");
-    }
-
-    bool TryStartVideoEnterprise()
-    {
-#if UNITY_ANDROID && !UNITY_EDITOR
-        try
-        {
-            if (!InvokeEnterpriseRecordToggle()) return false;
-            _enterpriseRecordingToggled = true;
-            Debug.Log("[Video] Started recording with PXR_Enterprise.Record().");
-            return true;
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Video] Enterprise start failed: {e.Message}");
-        }
-#endif
-        return false;
-    }
-
-    bool TryStopVideoEnterprise()
-    {
-#if UNITY_ANDROID && !UNITY_EDITOR
-        if (!_enterpriseRecordingToggled) return false;
-        try
-        {
-            if (!InvokeEnterpriseRecordToggle()) return false;
-            _enterpriseRecordingToggled = false;
-            Debug.Log("[Video] Stopped recording with PXR_Enterprise.Record().");
-            return true;
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Video] Enterprise stop failed: {e.Message}");
-        }
-#endif
-        return false;
-    }
-
-    static bool InvokeEnterpriseRecordToggle()
-    {
-        try
-        {
-            var t = System.AppDomain.CurrentDomain
-                .GetAssemblies()
-                .Select(a => a.GetType("Unity.XR.PXR.PXR_Enterprise"))
-                .FirstOrDefault(x => x != null);
-            if (t == null) return false;
-            var m = t.GetMethod("Record", BindingFlags.Public | BindingFlags.Static);
-            if (m == null) return false;
-            m.Invoke(null, null);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     bool TryStartVideoShellBroadcast()
@@ -999,22 +1021,28 @@ public class SimpleRecordingController : MonoBehaviour
 
     IEnumerator FindAndCopyVideo(float dur, long frames)
     {
-        if (_videoBackend == "android_projection" && !string.IsNullOrEmpty(_directVideoPath))
+        // Camera2 writes directly to _directVideoPath
+        if (_videoBackend == "camera2" && !string.IsNullOrEmpty(_directVideoPath))
         {
+            // Close recorder to finalize the file
+            _cam2Recorder?.Close();
+            _cam2Recorder = null;
+
             for (int i = 0; i < 10; i++)
             {
                 if (File.Exists(_directVideoPath) && new FileInfo(_directVideoPath).Length > 0)
                 {
-                    sensorRecorder?.LogAction("video_saved", "pov_video.mp4", $"src={_directVideoPath}");
+                    long fileSize = new FileInfo(_directVideoPath).Length;
+                    sensorRecorder?.LogAction("video_saved", "pov_video.mp4", $"src=camera2,size={fileSize}");
                     sensorRecorder.StopSession();
                     if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
                     if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
-                    SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK\n{BuildQualityFooter()}");
+                    SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK ({fileSize / 1024}KB)\n{BuildQualityFooter()}");
                     yield break;
                 }
                 yield return new WaitForSeconds(0.5f);
             }
-            sensorRecorder?.LogAction("video_not_found", _videoBackend, "projection_output_missing");
+            sensorRecorder?.LogAction("video_not_found", _videoBackend, "camera2_output_missing");
         }
 
         // Give the system recorder time to finalize and retry for up to ~20s.
@@ -1231,6 +1259,7 @@ public class SimpleRecordingController : MonoBehaviour
         try
         {
             StopVideoRecording();
+            CleanupCamera2();
             bodyTrackingRecorder?.StopCapture();
             spatialMeshCapture?.StopCapture();
             sensorRecorder.StopSession("session_end_crash", "reason=application_quit");

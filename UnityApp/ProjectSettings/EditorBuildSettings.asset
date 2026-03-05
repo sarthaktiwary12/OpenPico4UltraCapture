@@ -9,5 +9,6 @@ EditorBuildSettings:
     path: Assets/Scenes/OpenPicoMain.unity
     guid: 338b8c54b101245b5a9c70b19275dd3b
   m_configObjects:
+    com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 89dc4588b68fa4d5fa74c35014f4e715, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: db18305ad05464823a94e742d6804316, type: 2}
   m_UseUCBPForAssetBundles: 0

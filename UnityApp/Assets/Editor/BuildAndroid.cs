@@ -20,9 +20,10 @@ public static class BuildAndroid
     public static void BuildCI()
     {
         EnsurePXRProjectSettings();
-        // NOTE: EnsurePXROpenXRProjectSettings sets isHandTracking=true which causes
-        // the PICO SDK to add handtracking=1 to the manifest. This causes the app to
-        // hang on startup on some firmware versions. Disabled until root cause is found.
+        // NOTE: EnsurePXROpenXRProjectSettings causes startup hang on Pico 4 Ultra
+        // (handtracking=1 manifest metadata blocks app launch).
+        // Hand tracking is enabled at runtime instead via PXR_Plugin.HandTracking.
+        // HandTrackingManifestPostProcessor removes the problematic metadata at build time.
         // EnsurePXROpenXRProjectSettings();
         EnsureScene();
 
@@ -146,8 +147,17 @@ public static class BuildAndroid
         }
 
         SetField("isHandTracking", true);
-        // HandTrackingSupport.ControllersAndHands = 0 — app works with both input modes.
-        // This causes the build processor to emit both handtracking=1 AND controller=1.
+        SetField("highFrequencyHand", true);
+        // HandTrackingSupport enum: ControllersAndHands=0, HandsOnly=1, ControllersOnly=2
+        // ControllersAndHands enables simultaneous hand+controller tracking.
+        var htEnum = type.GetField("handTrackingSupportType", BindingFlags.Public | BindingFlags.Instance);
+        if (htEnum != null)
+        {
+            var enumType = htEnum.FieldType;
+            htEnum.SetValue(instance, System.Enum.ToObject(enumType, 0)); // 0 = ControllersAndHands
+        }
+        // NOTE: HandTrackingManifestPostProcessor removes handtracking=1/controller=1 metadata
+        // that the PICO build processor injects, preventing the startup hang on this firmware.
 
         if (instance is UnityEngine.Object obj) EditorUtility.SetDirty(obj);
         AssetDatabase.SaveAssets();
@@ -216,9 +226,6 @@ public static class BuildAndroid
         var bodyGo = new GameObject("BodyTrackingRecorder");
         var body = bodyGo.AddComponent<BodyTrackingRecorder>();
         body.sensorRecorder = sensor;
-
-        var androidRecorderGo = new GameObject("AndroidScreenRecorder");
-        var androidRecorder = androidRecorderGo.AddComponent<AndroidScreenRecorder>();
 
         // ── World Space Canvas (VR passthrough mode) ──
         var canvasGo = new GameObject("RecordingCanvas");
@@ -309,7 +316,7 @@ public static class BuildAndroid
         controller.syncManager = sync;
         controller.spatialMeshCapture = mesh;
         controller.bodyTrackingRecorder = body;
-        controller.androidScreenRecorder = androidRecorder;
+        // CameraPermissionManager is auto-created at runtime by SimpleRecordingController
         controller.hudRoot = canvasGo;
         controller.showHudInHeadset = true;
         controller.btnToggle = btnToggle;
@@ -771,3 +778,98 @@ public static class BuildAndroid
         }
     }
 }
+
+#if UNITY_ANDROID
+/// <summary>
+/// Post-build processor that re-injects hand tracking manifest metadata after the
+/// PICO build processor strips it. Runs at callbackOrder=999 to execute after PICO's processor.
+/// This avoids needing isHandTracking=true in PXR_OpenXRProjectSetting (which causes startup hangs).
+/// </summary>
+public class HandTrackingManifestPostProcessor : UnityEditor.Android.IPostGenerateGradleAndroidProject
+{
+    public int callbackOrder => 999;
+
+    public void OnPostGenerateGradleAndroidProject(string path)
+    {
+        string manifestPath = Path.Combine(path, "src", "main", "AndroidManifest.xml");
+        if (!File.Exists(manifestPath))
+        {
+            Debug.LogWarning("[HandTrackingManifest] Manifest not found at: " + manifestPath);
+            return;
+        }
+
+        var doc = new System.Xml.XmlDocument();
+        doc.Load(manifestPath);
+
+        var nsManager = new System.Xml.XmlNamespaceManager(doc.NameTable);
+        nsManager.AddNamespace("android", "http://schemas.android.com/apk/res/android");
+
+        var appNode = doc.SelectSingleNode("//application");
+        if (appNode == null)
+        {
+            Debug.LogWarning("[HandTrackingManifest] <application> node not found");
+            return;
+        }
+
+        // Remove ALL input mode metadata to let Pico use its default behavior.
+        // Having controller=1 without handtracking=1 forces "controller required" mode.
+        // Having handtracking=1 causes startup hangs on this firmware.
+        // Removing both lets the system use whatever input is available.
+        RemoveMetaData(appNode, nsManager, "handtracking");
+        RemoveMetaData(appNode, nsManager, "Hand_Tracking_HighFrequency");
+        RemoveMetaData(appNode, nsManager, "controller");
+
+        // Ensure hand tracking permission exists (needed for runtime hand tracking)
+        var manifestNode = doc.SelectSingleNode("//manifest");
+        if (manifestNode != null)
+        {
+            string permName = "com.picovr.permission.HAND_TRACKING";
+            var existingPerm = manifestNode.SelectSingleNode(
+                $"uses-permission[@android:name='{permName}']", nsManager);
+            if (existingPerm == null)
+            {
+                var permElem = doc.CreateElement("uses-permission");
+                permElem.SetAttribute("name", "http://schemas.android.com/apk/res/android", permName);
+                manifestNode.InsertBefore(permElem, appNode);
+                Debug.Log($"[HandTrackingManifest] Added permission: {permName}");
+            }
+        }
+
+        doc.Save(manifestPath);
+        Debug.Log("[HandTrackingManifest] Manifest configured: removed handtracking+controller metadata (default mode)");
+    }
+
+    private static void EnsureMetaData(System.Xml.XmlDocument doc, System.Xml.XmlNode appNode,
+        System.Xml.XmlNamespaceManager nsManager, string name, string value)
+    {
+        var existing = appNode.SelectSingleNode(
+            $"meta-data[@android:name='{name}']", nsManager);
+        if (existing != null)
+        {
+            ((System.Xml.XmlElement)existing).SetAttribute("value",
+                "http://schemas.android.com/apk/res/android", value);
+        }
+        else
+        {
+            var elem = doc.CreateElement("meta-data");
+            elem.SetAttribute("name", "http://schemas.android.com/apk/res/android", name);
+            elem.SetAttribute("value", "http://schemas.android.com/apk/res/android", value);
+            appNode.AppendChild(elem);
+        }
+    }
+
+    /// <summary>
+    /// Removes a meta-data element with the given android:name from a parent node.
+    /// </summary>
+    private static void RemoveMetaData(System.Xml.XmlNode parentNode,
+        System.Xml.XmlNamespaceManager nsManager, string name)
+    {
+        var existing = parentNode.SelectSingleNode(
+            $"meta-data[@android:name='{name}']", nsManager);
+        if (existing != null)
+        {
+            parentNode.RemoveChild(existing);
+        }
+    }
+}
+#endif

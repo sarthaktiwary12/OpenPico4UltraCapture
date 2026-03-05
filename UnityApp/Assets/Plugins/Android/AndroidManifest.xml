@@ -77,9 +77,16 @@
             </intent-filter>
         </receiver>
 
+        <!-- Camera permission request activity from questcameralib.aar -->
+        <activity
+            android:name="com.samusynth.questcamera.core.CameraPermissionRequestActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:exported="false" />
+
         <meta-data android:name="pvr.app.type" android:value="vr" />
         <meta-data android:name="pvr.sdk.version" android:value="PICO Unity Integration SDK" />
-        <meta-data android:name="handtracking" android:value="1" />
-        <meta-data android:name="controller" android:value="1" />
+        <!-- handtracking/controller metadata intentionally omitted here.
+             HandTrackingManifestPostProcessor removes these at build time to prevent
+             startup hangs on Pico 4 Ultra firmware. -->
     </application>
 </manifest>
