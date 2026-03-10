@@ -36,9 +36,6 @@ public class SimpleRecordingController : MonoBehaviour
 
     [Header("Hand Visualization")]
     public HandVisualizer handVisualizer;
-    public bool enableHandPinchToggle = false;
-    public bool requireHandNearButtonForPinch = false;
-    public float pinchProximityRadius = 0.15f;
 
     [Header("Capture Guards")]
     public bool blockStartWhenHandTrackingUnavailable = false;
@@ -48,9 +45,7 @@ public class SimpleRecordingController : MonoBehaviour
     public float remoteCommandPollInterval = 0.25f;
 
     private bool _recording;
-    private bool _handNearButton;
     private float _startTime;
-    private bool _triggerWasDown;
     private bool _pinchWasDown;
     private float _stopCooldownUntil;
     private bool _handTrackingReady;
@@ -108,9 +103,6 @@ public class SimpleRecordingController : MonoBehaviour
 
         if (handVisualizer == null)
             handVisualizer = new GameObject("HandVisualizer").AddComponent<HandVisualizer>();
-
-        // Hands-only operation — pinch is the only input method, always enabled.
-        enableHandPinchToggle = true;
 
         string recordDir = Path.Combine(Application.persistentDataPath, "record");
         Directory.CreateDirectory(recordDir);
@@ -296,10 +288,7 @@ public class SimpleRecordingController : MonoBehaviour
             {
                 // Refresh idle status to show live hand tracking state
                 if (_handTrackingReady && _handFrameCount % 36 == 0)
-                {
-                    _handNearButton = IsHandNearButton();
                     SetIdle();
-                }
             }
 
             PollRemoteCommand();
@@ -554,40 +543,6 @@ public class SimpleRecordingController : MonoBehaviour
         _handStatus = sb.ToString();
     }
 
-    bool IsHandNearButton()
-    {
-        if (btnToggle == null) return true;
-        Vector3 btnPos = btnToggle.transform.position;
-
-        if (handVisualizer != null)
-        {
-            if (handVisualizer.RightHandTracked &&
-                Vector3.Distance(handVisualizer.RightIndexTipPosition, btnPos) < pinchProximityRadius)
-                return true;
-            if (handVisualizer.LeftHandTracked &&
-                Vector3.Distance(handVisualizer.LeftIndexTipPosition, btnPos) < pinchProximityRadius)
-                return true;
-        }
-
-        // Fallback: read XRHandSubsystem directly
-        if (_xrHandSub != null && _xrHandSub.running)
-        {
-            if (CheckJointNearButton(_xrHandSub.rightHand, btnPos) ||
-                CheckJointNearButton(_xrHandSub.leftHand, btnPos))
-                return true;
-        }
-
-        return false;
-    }
-
-    bool CheckJointNearButton(XRHand hand, Vector3 btnPos)
-    {
-        if (!hand.isTracked) return false;
-        var indexTip = hand.GetJoint(XRHandJointID.IndexTip);
-        if (!indexTip.TryGetPose(out Pose pose)) return false;
-        return Vector3.Distance(pose.position, btnPos) < pinchProximityRadius;
-    }
-
     void PollRemoteCommand()
     {
         if (!enableAdbRemoteControl) return;
@@ -662,7 +617,7 @@ public class SimpleRecordingController : MonoBehaviour
         {
             long frames = sensorRecorder != null ? sensorRecorder.FrameIndex : -1;
             string session = string.IsNullOrEmpty(_sessionDir) ? "none" : _sessionDir;
-            string text = $"recording={_recording}\nframes={frames}\nsession={session}\nhand_near_button={_handNearButton}\n";
+            string text = $"recording={_recording}\nframes={frames}\nsession={session}\n";
             File.WriteAllText(_remoteStatusPath, text);
         }
         catch (System.Exception e)
