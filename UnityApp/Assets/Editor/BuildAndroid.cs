@@ -188,7 +188,7 @@ public static class BuildAndroid
         cam.farClipPlane = 100f;
         cameraGo.AddComponent<AudioListener>();
         var passthrough = cameraGo.AddComponent<PassthroughEnabler>();
-        passthrough.enableOnStart = false;
+        passthrough.enableOnStart = true;
         AddTrackedPoseDriver(cameraGo);
 
         // Point XROrigin.CameraFloorOffsetObject and Camera at the right objects
