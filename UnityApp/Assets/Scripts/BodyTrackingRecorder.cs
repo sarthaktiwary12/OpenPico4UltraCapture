@@ -16,7 +16,10 @@ public class BodyTrackingRecorder : MonoBehaviour
     public int LastWrittenJointCount { get; private set; }
     public int LastNativeJointCount { get; private set; }
     public bool LastFrameUsedFallback { get; private set; }
+    public int FramesSampled => _framesSampled;
     public float FullJointFrameRatio => _framesSampled > 0 ? (float)_framesWith24Written / _framesSampled : 0f;
+    public float NativeFrameRatio => _framesSampled > 0 ? (float)_framesWithNativeAny / _framesSampled : 0f;
+    public float FallbackOnlyFrameRatio => _framesSampled > 0 ? (float)_framesFallbackOnly / _framesSampled : 0f;
 
     private StreamWriter _w;
     private bool _on;
@@ -32,6 +35,9 @@ public class BodyTrackingRecorder : MonoBehaviour
     private int _nativeDiagnosticCounter;
     private int _framesSampled;
     private int _framesWith24Written;
+    private int _framesWithNativeAny;
+    private int _framesFallbackOnly;
+    private string _lastSourceState = "none";
 
     // Matches BodyTrackerRole enum order (0–23)
     private static readonly string[] BodyJointNames = {
@@ -68,11 +74,11 @@ public class BodyTrackingRecorder : MonoBehaviour
 
         var path = Path.Combine(sessionDir, "body_pose.csv");
         _w = new StreamWriter(path, false, new UTF8Encoding(false), 65536);
-        _w.WriteLine("ts_s,frame,joint_id,joint_name,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,confidence");
+        _w.WriteLine("ts_s,frame,joint_id,joint_name,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,confidence,source,native_joint_count");
 
         SetWantBodyTracking(true, true);
         TryStartBodyTracking(forceLog: true);
-        _available = CheckAvailability();
+        _available = CheckAvailability(out string availDetail);
         _nextProbeTime = Time.realtimeSinceStartup + 2f;
         _nextStartAttemptTime = Time.realtimeSinceStartup + 2f;
         _loggedFallbackActive = false;
@@ -81,10 +87,14 @@ public class BodyTrackingRecorder : MonoBehaviour
         _nativeDiagnosticCounter = 0;
         _framesSampled = 0;
         _framesWith24Written = 0;
+        _framesWithNativeAny = 0;
+        _framesFallbackOnly = 0;
+        _lastSourceState = "none";
         LastWrittenJointCount = 0;
         LastNativeJointCount = 0;
         LastFrameUsedFallback = false;
         _on = true;
+        sensorRecorder?.LogAction("body_tracking_init", "runtime", $"available={_available};started={_bodyTrackingStarted};detail={availDetail}");
 
         if (!_available)
             Debug.LogWarning("[Body] Body tracking unavailable at start; using synthetic 24-joint fallback.");
@@ -124,9 +134,18 @@ public class BodyTrackingRecorder : MonoBehaviour
 
         if (Time.realtimeSinceStartup >= _nextProbeTime)
         {
-            _available = CheckAvailability();
+            bool prev = _available;
+            _available = CheckAvailability(out string availDetail);
             _nextProbeTime = Time.realtimeSinceStartup + 2f;
-            if (_available) Debug.Log("[Body] Body tracking became available during recording.");
+            if (_available && !prev)
+            {
+                Debug.Log("[Body] Body tracking became available during recording.");
+                sensorRecorder?.LogAction("body_native_available", "runtime", availDetail);
+            }
+            else if (!_available && prev)
+            {
+                sensorRecorder?.LogAction("body_native_unavailable", "runtime", availDetail);
+            }
         }
 
         SampleBody();
@@ -231,18 +250,22 @@ public class BodyTrackingRecorder : MonoBehaviour
             if (_frameHasNative[i]) nativeCount++;
         }
 
+        string source = nativeCount >= 24 ? "native" : "native_mixed";
         double ts = sensorRecorder.GetLiveSessionElapsed();
         long frame = sensorRecorder.FrameIndex;
         for (int i = 0; i < 24; i++)
         {
-            WriteJoint(ts, frame, i, BodyJointNames[i], _framePos[i], _frameRot[i], _frameConf[i]);
+            WriteJoint(ts, frame, i, BodyJointNames[i], _framePos[i], _frameRot[i], _frameConf[i], source, nativeCount);
         }
 
         LastNativeJointCount = nativeCount;
         LastWrittenJointCount = 24;
         LastFrameUsedFallback = nativeCount < 24;
         _framesSampled++;
-        _framesWith24Written++;
+        if (nativeCount >= 24) _framesWith24Written++;
+        if (nativeCount > 0) _framesWithNativeAny++;
+        if (nativeCount == 0) _framesFallbackOnly++;
+        UpdateBodySourceState(source, nativeCount);
 
         return true;
     }
@@ -269,14 +292,15 @@ public class BodyTrackingRecorder : MonoBehaviour
         long frame = sensorRecorder.FrameIndex;
         for (int i = 0; i < 24; i++)
         {
-            WriteJoint(ts, frame, i, BodyJointNames[i], _fallbackPos[i], _fallbackRot[i], 0.0f);
+            WriteJoint(ts, frame, i, BodyJointNames[i], _fallbackPos[i], _fallbackRot[i], 0.0f, "fallback", 0);
         }
 
         LastNativeJointCount = 0;
         LastWrittenJointCount = 24;
         LastFrameUsedFallback = true;
         _framesSampled++;
-        _framesWith24Written++;
+        _framesFallbackOnly++;
+        UpdateBodySourceState("fallback", 0);
     }
 
     private bool BuildFallbackPose()
@@ -403,9 +427,9 @@ public class BodyTrackingRecorder : MonoBehaviour
         return true;
     }
 
-    private void WriteJoint(double ts, long frame, int jointId, string jointName, Vector3 p, Quaternion q, float confidence)
+    private void WriteJoint(double ts, long frame, int jointId, string jointName, Vector3 p, Quaternion q, float confidence, string source, int nativeJointCount)
     {
-        _w.WriteLine($"{ts:F6},{frame},{jointId},{jointName},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{confidence:F3}");
+        _w.WriteLine($"{ts:F6},{frame},{jointId},{jointName},{p.x:F6},{p.y:F6},{p.z:F6},{q.x:F6},{q.y:F6},{q.z:F6},{q.w:F6},{confidence:F3},{source},{nativeJointCount}");
     }
 
 #if PICO_XR
@@ -459,6 +483,7 @@ public class BodyTrackingRecorder : MonoBehaviour
             int supportRet = PXR_MotionTracking.GetBodyTrackingSupported(ref supported);
             if (supportRet != 0 || !supported)
             {
+                sensorRecorder?.LogAction("body_start_failed", "runtime", $"support_ret={supportRet};supported={supported}");
                 if (forceLog) Debug.LogWarning($"[Body] Body tracking unsupported (ret={supportRet}, supported={supported}).");
                 return;
             }
@@ -469,11 +494,20 @@ public class BodyTrackingRecorder : MonoBehaviour
                 startRet = PXR_MotionTracking.StartBodyTracking(BodyJointSet.BODY_JOINT_SET_BODY_START_WITHOUT_ARM, boneLength);
 
             _bodyTrackingStarted = startRet == 0;
-            if (_bodyTrackingStarted) Debug.Log("[Body] Body tracking started.");
-            else if (forceLog) Debug.LogWarning($"[Body] Failed to start body tracking (ret={startRet}).");
+            if (_bodyTrackingStarted)
+            {
+                Debug.Log("[Body] Body tracking started.");
+                sensorRecorder?.LogAction("body_start_ok", "runtime", "ret=0");
+            }
+            else
+            {
+                sensorRecorder?.LogAction("body_start_failed", "runtime", $"ret={startRet}");
+                if (forceLog) Debug.LogWarning($"[Body] Failed to start body tracking (ret={startRet}).");
+            }
         }
         catch (System.Exception e)
         {
+            sensorRecorder?.LogAction("body_start_exception", "runtime", e.GetType().Name);
             if (forceLog) Debug.LogWarning($"[Body] Start body tracking error: {e.Message}");
         }
 #endif
@@ -488,21 +522,24 @@ public class BodyTrackingRecorder : MonoBehaviour
             var method = mtType.GetMethod("WantBodyTracking", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(bool) }, null);
             if (method == null)
             {
+                sensorRecorder?.LogAction("body_want_tracking_missing", "runtime", $"enable={enable}");
                 if (forceLog) Debug.Log("[Body] WantBodyTracking(bool) not available in this SDK.");
                 return;
             }
 
             object ret = method.Invoke(null, new object[] { enable });
+            sensorRecorder?.LogAction("body_want_tracking", "runtime", $"enable={enable};ret={ret}");
             if (forceLog) Debug.Log($"[Body] WantBodyTracking({enable}) -> {ret}");
         }
         catch (System.Exception e)
         {
+            sensorRecorder?.LogAction("body_want_tracking_exception", "runtime", $"{e.GetType().Name};enable={enable}");
             if (forceLog) Debug.LogWarning($"[Body] WantBodyTracking({enable}) failed: {e.Message}");
         }
 #endif
     }
 
-    private bool CheckAvailability()
+    private bool CheckAvailability(out string detail)
     {
 #if PICO_XR
         try
@@ -515,13 +552,16 @@ public class BodyTrackingRecorder : MonoBehaviour
             int ret = PXR_MotionTracking.GetBodyTrackingData(ref getInfo, ref data);
             int len = data.roleDatas == null ? 0 : data.roleDatas.Length;
             bool available = stateRet == 0 && isTracking && ret == 0 && len > 0;
+            detail = $"state_ret={stateRet};is_tracking={isTracking};data_ret={ret};joints={len}";
             return available;
         }
         catch
         {
+            detail = "exception=true";
             return false;
         }
 #else
+        detail = "pico_xr_disabled=true";
         return false;
 #endif
     }
@@ -541,6 +581,29 @@ public class BodyTrackingRecorder : MonoBehaviour
         Debug.Log($"[Body] Native snapshot ret={ret}, joints={len}, valid={validCount}, span=({span.x:F3},{span.y:F3},{span.z:F3})");
     }
 #endif
+
+    private void UpdateBodySourceState(string source, int nativeJointCount)
+    {
+        if (source == _lastSourceState) return;
+
+        if (source == "fallback")
+        {
+            sensorRecorder?.LogAction("body_fallback_active", "body_pose", $"native_joint_count={nativeJointCount}");
+        }
+        else if (source == "native")
+        {
+            if (_lastSourceState == "fallback")
+                sensorRecorder?.LogAction("body_native_recovered", "body_pose", $"native_joint_count={nativeJointCount}");
+            else
+                sensorRecorder?.LogAction("body_native_active", "body_pose", $"native_joint_count={nativeJointCount}");
+        }
+        else
+        {
+            sensorRecorder?.LogAction("body_native_active", "body_pose", $"source={source};native_joint_count={nativeJointCount}");
+        }
+
+        _lastSourceState = source;
+    }
 
     void OnDestroy()
     {

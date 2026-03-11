@@ -151,6 +151,16 @@ def audit(session: Path):
             return None
         return min(vals), max(vals)
 
+    def event_ts(event_type):
+        vals = []
+        for r in actions:
+            if r.get("event_type") != event_type:
+                continue
+            ts = fval(r.get("ts_s"))
+            if math.isfinite(ts):
+                vals.append(ts)
+        return vals
+
     # 1) timestamp monotonicity across streams
     for name, rows in (("imu", imu), ("head", head), ("hand", hand), ("body", body), ("depth", depth), ("actions", actions)):
         ts = ts_values(rows)
@@ -165,6 +175,36 @@ def audit(session: Path):
         if len(ts) >= 2:
             jump = ts[0] - ts[1]
             checks.append(Check(f"{name}.first_timestamp_jump", "fail" if jump > 5.0 else "pass", f"first_minus_second={jump:.3f}s"))
+
+    task_start_vals = event_ts("task_start")
+    task_end_vals = event_ts("task_end")
+    task_window = None
+    if task_start_vals and task_end_vals:
+        lo = task_start_vals[0]
+        hi = task_end_vals[-1]
+        if hi > lo:
+            task_window = (lo, hi)
+            checks.append(Check("task.window_present", "pass", f"start={lo:.3f}, end={hi:.3f}, duration={hi-lo:.3f}s"))
+        else:
+            checks.append(Check("task.window_present", "fail", f"non_positive_window start={lo:.3f}, end={hi:.3f}"))
+    else:
+        checks.append(Check("task.window_present", "warn", "missing task_start or task_end"))
+
+    def rows_in_window(rows):
+        if task_window is None:
+            return rows
+        lo, hi = task_window
+        out = []
+        for r in rows:
+            ts = fval(r.get("ts_s"))
+            if math.isfinite(ts) and lo <= ts <= hi:
+                out.append(r)
+        return out
+
+    imu_task = rows_in_window(imu)
+    head_task = rows_in_window(head)
+    hand_task = rows_in_window(hand)
+    body_task = rows_in_window(body)
 
     # 2) frame continuity
     for name, rows in (("imu", imu), ("head", head), ("body", body)):
@@ -207,9 +247,11 @@ def audit(session: Path):
         checks.append(Check("head.tracking_state", "fail", "missing head rows"))
 
     # 5) hand stream completeness
-    if hand:
-        hand_joints = sorted({r.get("joint_name", "") for r in hand})
-        hands = sorted({r.get("hand", "") for r in hand})
+    head_eval = head_task if task_window is not None else head
+    hand_eval = hand_task if task_window is not None else hand
+    if hand_eval:
+        hand_joints = sorted({r.get("joint_name", "") for r in hand_eval})
+        hands = sorted({r.get("hand", "") for r in hand_eval})
         if hand_joints == ["WristFallback"]:
             checks.append(Check("hand.joint_completeness", "fail", "only WristFallback present (no finger joints)"))
         elif len(hand_joints) < 5:
@@ -222,33 +264,50 @@ def audit(session: Path):
         checks.append(Check("hand.left_right_presence", "fail", "missing hand rows"))
 
     # 6) body stream quality
-    if body:
-        body_joints = sorted({r.get("joint_name", "") for r in body})
-        conf = [fval(r.get("confidence")) for r in body]
+    body_eval = body_task if task_window is not None else body
+    if body_eval:
+        body_joints = sorted({r.get("joint_name", "") for r in body_eval})
+        conf = [fval(r.get("confidence")) for r in body_eval]
         conf_mean = sum(conf) / max(len(conf), 1)
         checks.append(Check("body.joint_count", "pass" if len(body_joints) >= 10 else "warn", f"joints={len(body_joints)} {body_joints}"))
         checks.append(Check("body.mean_confidence", "pass" if conf_mean >= 0.3 else "warn", f"mean_confidence={conf_mean:.3f}, min={min(conf):.3f}, max={max(conf):.3f}"))
+        if "source" in body_eval[0]:
+            src = Counter((r.get("source") or "unknown") for r in body_eval)
+            native_like = sum(v for k, v in src.items() if k.startswith("native"))
+            src_ratio = native_like / max(len(body_eval), 1)
+            checks.append(Check("body.source_labels", "pass", f"sources={dict(src)}, native_like_ratio={src_ratio:.3f}"))
     else:
         checks.append(Check("body.joint_count", "fail", "missing body rows"))
         checks.append(Check("body.mean_confidence", "fail", "missing body rows"))
 
-    head_span = ts_span(head)
-    body_span = ts_span(body)
+    head_span = ts_span(head_eval)
+    body_span = ts_span(body_eval)
     if not monotonic_ok.get("body", False):
-        checks.append(Check("body.coverage_vs_head", "fail", "body timestamps non-monotonic"))
-    elif head_span and body_span:
-        head_dur = max(0.0, head_span[1] - head_span[0])
+        checks.append(Check("body.coverage_vs_task_window", "fail", "body timestamps non-monotonic"))
+    elif body_span and task_window:
+        task_dur = max(0.0, task_window[1] - task_window[0])
         body_dur = max(0.0, body_span[1] - body_span[0])
-        ratio = body_dur / max(head_dur, 1e-6)
+        ratio = body_dur / max(task_dur, 1e-6)
         if ratio >= 0.80:
             st = "pass"
         elif ratio >= 0.50:
             st = "warn"
         else:
             st = "fail"
-        checks.append(Check("body.coverage_vs_head", st, f"body_span={body_dur:.3f}s, head_span={head_dur:.3f}s, ratio={ratio:.3f}"))
+        checks.append(Check("body.coverage_vs_task_window", st, f"body_span={body_dur:.3f}s, task_window={task_dur:.3f}s, ratio={ratio:.3f}"))
+    elif head_span and body_span:
+        head_dur = max(0.0, head_span[1] - head_span[0])
+        body_dur = max(0.0, body_span[1] - body_span[0])
+        ratio = body_dur / max(head_dur, 1e-6)
+        checks.append(Check("body.coverage_vs_task_window", "warn", f"task window missing, fallback to full stream ratio={ratio:.3f}"))
     else:
-        checks.append(Check("body.coverage_vs_head", "fail", "insufficient head/body timestamps"))
+        checks.append(Check("body.coverage_vs_task_window", "fail", "insufficient head/body timestamps"))
+
+    full_head_span = ts_span(head)
+    if task_window and full_head_span:
+        post_tail = max(0.0, full_head_span[1] - task_window[1])
+        tail_status = "warn" if post_tail > 15.0 else "pass"
+        checks.append(Check("streams.post_stop_tail", tail_status, f"head_tail_after_task_end={post_tail:.3f}s"))
 
     # 7) depth mesh stream
     if depth:
@@ -309,6 +368,7 @@ def audit(session: Path):
     result = {
         "session": session.name,
         "summary": summary,
+        "task_window": {"start_s": task_window[0], "end_s": task_window[1]} if task_window else None,
         "counts": {
             "imu": len(imu),
             "head": len(head),

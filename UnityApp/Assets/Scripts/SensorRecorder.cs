@@ -34,6 +34,9 @@ public class SensorRecorder : MonoBehaviour
     public Vector3 LastImuGravity { get; private set; }
     public float RealHandFrameRatio => _sampleCount > 0 ? (float)_realHandFrameCount / _sampleCount : 0f;
     public float ImuGravityFrameRatio => _sampleCount > 0 ? (float)_imuGravityFrameCount / _sampleCount : 0f;
+    public float BodyNativeFrameRatio => _bodyFramesSampled > 0 ? _bodyNativeFrameRatio : 0f;
+    public float BodyFallbackFrameRatio => _bodyFramesSampled > 0 ? _bodyFallbackFrameRatio : 0f;
+    public int BodyFramesSampled => _bodyFramesSampled;
     public double SessionElapsedNow => GetLiveSessionElapsed();
 
     private string _sessionDir;
@@ -53,11 +56,28 @@ public class SensorRecorder : MonoBehaviour
     private Vector3 _prevDerivedHeadVel;
     private double _prevHeadPosTs;
     private bool _loggedImuNoGravity;
+    private bool _loggedImuStale;
     private long _sampleCount;
     private long _realHandFrameCount;
     private long _imuGravityFrameCount;
     private long _handFallbackFrameCount;
     private long _imuFallbackFrameCount;
+    private long _imuNativeAccelFrameCount;
+    private long _imuNativeGyroFrameCount;
+    private long _imuNativeGravityFrameCount;
+    private long _imuFullNativeFrameCount;
+    private long _imuHeadKinematicsFallbackFrameCount;
+    private long _imuUnityFallbackFrameCount;
+    private long _imuNativeStaleFrameCount;
+    private bool _hasTaskStart;
+    private bool _hasTaskEnd;
+    private bool _hasFinalizeStart;
+    private double _taskStartElapsed;
+    private double _taskEndElapsed;
+    private double _finalizeStartElapsed;
+    private int _bodyFramesSampled;
+    private float _bodyNativeFrameRatio;
+    private float _bodyFallbackFrameRatio;
     private readonly List<InputDevice> _tmpDevices = new List<InputDevice>(4);
     private readonly List<XRHandSubsystem> _tmpHandSubsystems = new List<XRHandSubsystem>(4);
     private XRHandSubsystem _xrHandSubsystem;
@@ -143,7 +163,7 @@ public class SensorRecorder : MonoBehaviour
 
         _headW = W("head_pose.csv", "ts_s,frame,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,tracking_state");
         _handW = W("hand_joints.csv", "ts_s,frame,hand,joint_id,joint_name,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,radius");
-        _imuW = W("imu.csv", "ts_s,frame,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,grav_x,grav_y,grav_z");
+        _imuW = W("imu.csv", "ts_s,frame,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,grav_x,grav_y,grav_z,accel_source,gyro_source,grav_source,fallback_used,fallback_reason");
         _actionW = W("action_log.csv", "ts_s,frame,event_type,action_type,metadata");
 
         _startRealtime = Time.realtimeSinceStartupAsDouble;
@@ -154,6 +174,7 @@ public class SensorRecorder : MonoBehaviour
         _loggedHandFallback = false;
         _loggedImuFallback = false;
         _loggedImuNoGravity = false;
+        _loggedImuStale = false;
         _hasPrevHeadVel = false;
         _hasPrevHeadPos = false;
         _hasPrevDerivedHeadVel = false;
@@ -169,9 +190,26 @@ public class SensorRecorder : MonoBehaviour
         _imuGravityFrameCount = 0;
         _handFallbackFrameCount = 0;
         _imuFallbackFrameCount = 0;
+        _imuNativeAccelFrameCount = 0;
+        _imuNativeGyroFrameCount = 0;
+        _imuNativeGravityFrameCount = 0;
+        _imuFullNativeFrameCount = 0;
+        _imuHeadKinematicsFallbackFrameCount = 0;
+        _imuUnityFallbackFrameCount = 0;
+        _imuNativeStaleFrameCount = 0;
+        _hasTaskStart = false;
+        _hasTaskEnd = false;
+        _hasFinalizeStart = false;
+        _taskStartElapsed = 0d;
+        _taskEndElapsed = 0d;
+        _finalizeStartElapsed = 0d;
+        _bodyFramesSampled = 0;
+        _bodyNativeFrameRatio = 0f;
+        _bodyFallbackFrameRatio = 0f;
         FrameIndex = 0; _lastSample = Time.realtimeSinceStartup;
         IsRecording = true;
         LogPermissionSnapshot();
+        LogNativeImuRuntimeStatus();
         LogHandTrackingAvailability();
         WriteCalibration(); LogAction("session_start", task, $"scenario={scenario}");
         WriteSummary();
@@ -217,6 +255,23 @@ public class SensorRecorder : MonoBehaviour
         _handW?.Flush();
         _imuW?.Flush();
         _actionW?.Flush();
+        WriteSummary();
+    }
+
+    public void MarkFinalizePhaseStart()
+    {
+        if (!IsRecording) return;
+        _elapsed = GetLiveSessionElapsed();
+        _hasFinalizeStart = true;
+        _finalizeStartElapsed = _elapsed;
+        WriteSummary();
+    }
+
+    public void UpdateBodyMetrics(float nativeFrameRatio, float fallbackFrameRatio, int sampledFrames)
+    {
+        _bodyFramesSampled = Mathf.Max(0, sampledFrames);
+        _bodyNativeFrameRatio = Mathf.Clamp01(nativeFrameRatio);
+        _bodyFallbackFrameRatio = Mathf.Clamp01(fallbackFrameRatio);
         WriteSummary();
     }
 
@@ -384,80 +439,155 @@ public class SensorRecorder : MonoBehaviour
 
     void SampleIMU()
     {
-        Vector3 a;
-        Vector3 g;
+        Vector3 a = Vector3.zero;
+        Vector3 g = Vector3.zero;
         Vector3 grav = Vector3.zero;
-        bool loggedFallback = false;
+        string accelSource = "none";
+        string gyroSource = "none";
+        string gravSource = "none";
+        string fallbackReason = "none";
         bool usedNative = false;
+        bool usedHeadFallback = false;
+        bool usedUnityFallback = false;
+
         var native = NativeIMUBridge.Instance;
-        if (native != null && native.IsActive && native.HasFreshData)
+        bool nativeActive = native != null && native.IsActive;
+        bool nativeFresh = nativeActive && native.HasFreshData;
+        if (nativeActive && !nativeFresh)
         {
-            a = native.Acceleration;
-            g = native.AngularVelocity;
-            grav = native.Gravity;
+            _imuNativeStaleFrameCount++;
+            fallbackReason = AppendReason(fallbackReason, "native_stale");
+            if (!_loggedImuStale)
+            {
+                _loggedImuStale = true;
+                LogAction("imu_native_stale", "native_bridge", native.BuildRegistrationStatus());
+            }
+        }
+        else if (_loggedImuStale && nativeFresh)
+        {
+            _loggedImuStale = false;
+            LogAction("imu_native_recovered", "native_bridge", native.BuildRegistrationStatus());
+        }
+
+        if (nativeFresh)
+        {
             usedNative = true;
             _nativeImu = true;
 
-            bool nativeAccelValid = a.sqrMagnitude > 1e-8f;
-            bool nativeGyroValid = g.sqrMagnitude > 1e-8f;
-
-            if (!nativeAccelValid || !nativeGyroValid)
+            if (native.Acceleration.sqrMagnitude > 1e-8f)
             {
-                if (TryGetHeadKinematics(out Vector3 xrA, out Vector3 xrG))
-                {
-                    if (!nativeAccelValid && xrA.sqrMagnitude > 1e-8f) a = xrA;
-                    if (!nativeGyroValid && xrG.sqrMagnitude > 1e-8f) g = xrG;
-                    loggedFallback = true;
-                }
+                a = native.Acceleration;
+                accelSource = "native_accel";
+                _imuNativeAccelFrameCount++;
+            }
+            else
+            {
+                fallbackReason = AppendReason(fallbackReason, "native_accel_zero");
             }
 
-            if (a.sqrMagnitude < 1e-8f)
+            if (native.AngularVelocity.sqrMagnitude > 1e-8f)
             {
-                Vector3 ua = Input.gyro.enabled ? Input.gyro.userAcceleration : Vector3.zero;
-                if (ua.sqrMagnitude > 1e-8f) a = ua;
-                else
-                {
-                    Vector3 ra = Input.acceleration;
-                    if (ra.sqrMagnitude > 1e-8f) a = ra;
-                }
-                loggedFallback = true;
+                g = native.AngularVelocity;
+                gyroSource = "native_gyro";
+                _imuNativeGyroFrameCount++;
+            }
+            else
+            {
+                fallbackReason = AppendReason(fallbackReason, "native_gyro_zero");
             }
 
-            if (g.sqrMagnitude < 1e-8f && Input.gyro.enabled)
+            if (native.Gravity.sqrMagnitude > 1e-8f)
             {
-                Vector3 ug = Input.gyro.rotationRateUnbiased;
-                if (ug.sqrMagnitude > 1e-8f) g = ug;
-                loggedFallback = true;
-            }
-
-            if (grav.sqrMagnitude < 1e-8f && native.HasGravityData)
                 grav = native.Gravity;
-        }
-        else if (TryGetHeadKinematics(out a, out g))
-        {
-            loggedFallback = true;
+                gravSource = "native_gravity";
+                _imuNativeGravityFrameCount++;
+            }
         }
         else
         {
-            a = Input.gyro.enabled ? Input.gyro.userAcceleration : Input.acceleration;
-            g = Input.gyro.enabled ? Input.gyro.rotationRateUnbiased : Vector3.zero;
-            if (a.sqrMagnitude < 1e-8f)
-                a = Input.acceleration;
-            loggedFallback = true;
+            fallbackReason = AppendReason(fallbackReason, nativeActive ? "native_not_fresh" : "native_inactive");
+        }
+
+        if ((a.sqrMagnitude < 1e-8f || g.sqrMagnitude < 1e-8f) && TryGetHeadKinematics(out Vector3 xrA, out Vector3 xrG))
+        {
+            if (a.sqrMagnitude < 1e-8f && xrA.sqrMagnitude > 1e-8f)
+            {
+                a = xrA;
+                accelSource = "xr_head_kinematics";
+                usedHeadFallback = true;
+            }
+            if (g.sqrMagnitude < 1e-8f && xrG.sqrMagnitude > 1e-8f)
+            {
+                g = xrG;
+                gyroSource = "xr_head_kinematics";
+                usedHeadFallback = true;
+            }
+        }
+
+        if (a.sqrMagnitude < 1e-8f)
+        {
+            Vector3 ua = Input.gyro.enabled ? Input.gyro.userAcceleration : Vector3.zero;
+            if (ua.sqrMagnitude > 1e-8f)
+            {
+                a = ua;
+                accelSource = "unity_user_accel";
+                usedUnityFallback = true;
+            }
+        }
+
+        if (a.sqrMagnitude < 1e-8f)
+        {
+            Vector3 ra = Input.acceleration;
+            if (ra.sqrMagnitude > 1e-8f)
+            {
+                a = ra;
+                accelSource = "unity_acceleration";
+                usedUnityFallback = true;
+            }
+            else
+            {
+                accelSource = "zero";
+                fallbackReason = AppendReason(fallbackReason, "accel_unavailable");
+            }
+        }
+
+        if (g.sqrMagnitude < 1e-8f && Input.gyro.enabled)
+        {
+            Vector3 ug = Input.gyro.rotationRateUnbiased;
+            if (ug.sqrMagnitude > 1e-8f)
+            {
+                g = ug;
+                gyroSource = "unity_gyro";
+                usedUnityFallback = true;
+            }
+        }
+
+        if (g.sqrMagnitude < 1e-8f)
+        {
+            gyroSource = "zero";
+            fallbackReason = AppendReason(fallbackReason, "gyro_unavailable");
         }
 
         if (grav.sqrMagnitude < 1e-8f && Input.gyro.enabled)
         {
             Vector3 inferredGravity = Input.gyro.gravity;
             if (inferredGravity.sqrMagnitude > 1e-8f)
+            {
                 grav = inferredGravity;
+                gravSource = "unity_gyro_gravity";
+                usedUnityFallback = true;
+            }
         }
 
         if (grav.sqrMagnitude < 1e-8f && Input.gyro.enabled)
         {
             Vector3 inferredGravity = Input.acceleration - Input.gyro.userAcceleration;
             if (inferredGravity.sqrMagnitude > 1e-8f)
+            {
                 grav = inferredGravity;
+                gravSource = "inferred_gravity";
+                usedUnityFallback = true;
+            }
         }
 
         // Last resort: if accel magnitude is near ~9.8 and no user accel data,
@@ -465,7 +595,22 @@ public class SensorRecorder : MonoBehaviour
         if (grav.sqrMagnitude < 1e-8f && a.magnitude >= 8f && a.magnitude <= 12f)
         {
             grav = a;
+            gravSource = "accel_as_gravity";
+            usedUnityFallback = true;
         }
+
+        if (grav.sqrMagnitude < 1e-8f)
+        {
+            gravSource = "none";
+            fallbackReason = AppendReason(fallbackReason, "gravity_missing");
+        }
+
+        if (usedHeadFallback) _imuHeadKinematicsFallbackFrameCount++;
+        if (usedUnityFallback) _imuUnityFallbackFrameCount++;
+
+        bool fullNative = accelSource.StartsWith("native_") && gyroSource.StartsWith("native_");
+        if (fullNative) _imuFullNativeFrameCount++;
+        bool loggedFallback = !fullNative;
 
         LastImuAccelMagnitude = a.magnitude;
         LastImuHasGravity = grav.sqrMagnitude > 1f || LastImuAccelMagnitude >= 8f;
@@ -476,8 +621,13 @@ public class SensorRecorder : MonoBehaviour
 
         if (loggedFallback && !_loggedImuFallback)
         {
-            LogAction("imu_fallback", "xr_head_kinematics", "native_or_gyro_unavailable");
+            LogAction("imu_fallback", "multi_source", fallbackReason);
             _loggedImuFallback = true;
+        }
+        else if (!loggedFallback && _loggedImuFallback)
+        {
+            _loggedImuFallback = false;
+            LogAction("imu_fallback_recovered", "native_bridge", "full_native");
         }
 
         if (usedNative && !LastImuHasGravity && !_loggedImuNoGravity)
@@ -486,7 +636,9 @@ public class SensorRecorder : MonoBehaviour
             LogAction("imu_no_gravity_detected", "native", $"accel_mag={LastImuAccelMagnitude:F3}");
         }
 
-        _imuW.WriteLine($"{_elapsed:F6},{FrameIndex},{a.x:F6},{a.y:F6},{a.z:F6},{g.x:F6},{g.y:F6},{g.z:F6},{grav.x:F6},{grav.y:F6},{grav.z:F6}");
+        _imuW.WriteLine(
+            $"{_elapsed:F6},{FrameIndex},{a.x:F6},{a.y:F6},{a.z:F6},{g.x:F6},{g.y:F6},{g.z:F6},{grav.x:F6},{grav.y:F6},{grav.z:F6}," +
+            $"{Esc(accelSource)},{Esc(gyroSource)},{Esc(gravSource)},{(loggedFallback ? 1 : 0)},{Esc(fallbackReason)}");
     }
 
     bool TryGetHeadKinematics(out Vector3 accel, out Vector3 gyro)
@@ -748,7 +900,8 @@ public class SensorRecorder : MonoBehaviour
     {
         var native = NativeIMUBridge.Instance;
         Vector3 candidate = Vector3.zero;
-        bool nativeReady = native != null && native.IsActive && native.HasFreshData;
+        bool nativeActive = native != null && native.IsActive;
+        bool nativeReady = nativeActive && native.HasFreshData;
         if (nativeReady)
             candidate = native.Acceleration;
         if (candidate.sqrMagnitude < 1e-8f)
@@ -756,8 +909,12 @@ public class SensorRecorder : MonoBehaviour
 
         accelMag = candidate.magnitude;
         bool gravityPresent = accelMag >= 5f;
-        detail = $"native_active={nativeReady};accel_mag={accelMag:F3};gravity={gravityPresent}";
-        return gravityPresent;
+        string mode = nativeReady ? "native" : "fallback_only";
+        detail = $"native_active={nativeActive};native_fresh={nativeReady};accel_mag={accelMag:F3};gravity={gravityPresent};mode={mode}";
+        if (native != null)
+            detail += ";" + native.BuildRegistrationStatus();
+        // Warn when native IMU is unavailable; start remains non-blocking in controller logic.
+        return gravityPresent && nativeReady;
     }
 
     void LogPermissionSnapshot()
@@ -772,6 +929,17 @@ public class SensorRecorder : MonoBehaviour
         bool handOk = IsHandTrackingReadyForCapture(out string detail);
         LogAction("hand_tracking_availability", handOk ? "ready" : "not_ready", detail);
         Debug.Log($"[Hands] Availability: {detail}");
+    }
+
+    void LogNativeImuRuntimeStatus()
+    {
+        var native = NativeIMUBridge.Instance;
+        if (native == null)
+        {
+            LogAction("imu_runtime_status", "native_bridge", "bridge_missing");
+            return;
+        }
+        LogAction("imu_runtime_status", "native_bridge", native.BuildRegistrationStatus());
     }
 
     // ── Calibration ──
@@ -818,7 +986,7 @@ public class SensorRecorder : MonoBehaviour
         j.AppendLine("      \"LeftWrist\",\"RightWrist\",\"LeftHand\",\"RightHand\"],");
         j.AppendLine("    \"output_file\": \"body_pose.csv\"");
         j.AppendLine("  },");
-        j.AppendLine("  \"imu\": { \"location\": \"HMD\", \"accel_unit\": \"m/s^2\", \"gyro_unit\": \"rad/s\", \"gravity_unit\": \"m/s^2\", \"source\": \"auto_multi_source\", \"columns\": [\"accel_xyz\",\"gyro_xyz\",\"grav_xyz\"] },");
+        j.AppendLine("  \"imu\": { \"location\": \"HMD\", \"accel_unit\": \"m/s^2\", \"gyro_unit\": \"rad/s\", \"gravity_unit\": \"m/s^2\", \"source\": \"auto_multi_source\", \"columns\": [\"accel_xyz\",\"gyro_xyz\",\"grav_xyz\",\"accel_source\",\"gyro_source\",\"grav_source\",\"fallback_used\",\"fallback_reason\"] },");
         j.AppendLine("  \"sync\": {");
         j.AppendLine($"    \"method\": \"clap_gesture + audio_beep + wallclock\",");
         j.AppendLine($"    \"sensor_epoch_realtime\": {_startRealtime:F6}, \"sensor_epoch_unix_s\": {_startWallclock:F3},");
@@ -834,18 +1002,38 @@ public class SensorRecorder : MonoBehaviour
         try
         {
             double endWall = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            double taskDuration = (_hasTaskStart && _hasTaskEnd && _taskEndElapsed >= _taskStartElapsed)
+                ? (_taskEndElapsed - _taskStartElapsed)
+                : 0.0;
+            double recordingDuration = _hasFinalizeStart ? _finalizeStartElapsed : _elapsed;
+            double finalizeDuration = Math.Max(0.0, _elapsed - recordingDuration);
+            double fullNativeRatio = _sampleCount > 0 ? (double)_imuFullNativeFrameCount / _sampleCount : 0.0;
             var j = new StringBuilder();
             j.AppendLine("{");
             j.AppendLine($"  \"session_id\": \"{SessionId}\", \"task_type\": \"{Esc(taskType)}\",");
             j.AppendLine($"  \"scenario_category\": \"{Esc(scenarioCategory)}\",");
             j.AppendLine($"  \"total_frames\": {FrameIndex}, \"duration_s\": {_elapsed:F3},");
+            j.AppendLine($"  \"has_task_window\": {(_hasTaskStart && _hasTaskEnd).ToString().ToLowerInvariant()},");
+            j.AppendLine($"  \"task_start_s\": {_taskStartElapsed:F3}, \"task_end_s\": {_taskEndElapsed:F3},");
+            j.AppendLine($"  \"task_duration_s\": {taskDuration:F3}, \"recording_duration_s\": {recordingDuration:F3}, \"finalize_duration_s\": {finalizeDuration:F3},");
             j.AppendLine($"  \"actual_fps\": {(FrameIndex / Math.Max(_elapsed, 0.001)):F2}, \"target_fps\": {sampleRateHz},");
             j.AppendLine($"  \"start_unix_s\": {_startWallclock:F3}, \"end_unix_s\": {endWall:F3},");
             j.AppendLine("  \"quality\": {");
             j.AppendLine($"    \"real_hand_frame_ratio\": {RealHandFrameRatio:F4},");
             j.AppendLine($"    \"imu_gravity_frame_ratio\": {ImuGravityFrameRatio:F4},");
             j.AppendLine($"    \"hand_fallback_frames\": {_handFallbackFrameCount},");
-            j.AppendLine($"    \"imu_fallback_frames\": {_imuFallbackFrameCount}");
+            j.AppendLine($"    \"imu_fallback_frames\": {_imuFallbackFrameCount},");
+            j.AppendLine($"    \"imu_full_native_frame_ratio\": {fullNativeRatio:F4},");
+            j.AppendLine($"    \"imu_native_accel_frames\": {_imuNativeAccelFrameCount},");
+            j.AppendLine($"    \"imu_native_gyro_frames\": {_imuNativeGyroFrameCount},");
+            j.AppendLine($"    \"imu_native_gravity_frames\": {_imuNativeGravityFrameCount},");
+            j.AppendLine($"    \"imu_full_native_frames\": {_imuFullNativeFrameCount},");
+            j.AppendLine($"    \"imu_head_kinematics_fallback_frames\": {_imuHeadKinematicsFallbackFrameCount},");
+            j.AppendLine($"    \"imu_unity_fallback_frames\": {_imuUnityFallbackFrameCount},");
+            j.AppendLine($"    \"imu_native_stale_frames\": {_imuNativeStaleFrameCount},");
+            j.AppendLine($"    \"body_frames_sampled\": {_bodyFramesSampled},");
+            j.AppendLine($"    \"body_native_frame_ratio\": {_bodyNativeFrameRatio:F4},");
+            j.AppendLine($"    \"body_fallback_frame_ratio\": {_bodyFallbackFrameRatio:F4}");
             j.AppendLine("  }");
             j.AppendLine("}");
             File.WriteAllText(Path.Combine(_sessionDir, "session_summary.json"), j.ToString());
@@ -858,12 +1046,29 @@ public class SensorRecorder : MonoBehaviour
 
     void WriteActionRow(double ts, string evt, string action, string meta)
     {
+        if (evt == "task_start")
+        {
+            _hasTaskStart = true;
+            _taskStartElapsed = ts;
+        }
+        else if (evt == "task_end")
+        {
+            _hasTaskEnd = true;
+            _taskEndElapsed = ts;
+        }
         _actionW?.WriteLine($"{ts:F6},{FrameIndex},{evt},{Esc(action)},{Esc(meta)}");
         _actionW?.Flush();
     }
 
     StreamWriter W(string fn, string hdr) { var w = new StreamWriter(Path.Combine(_sessionDir, fn), false, new UTF8Encoding(false), 65536); w.WriteLine(hdr); return w; }
     void Close(ref StreamWriter w) { w?.Flush(); w?.Close(); w?.Dispose(); w = null; }
+    static string AppendReason(string current, string reason)
+    {
+        if (string.IsNullOrEmpty(reason)) return current;
+        if (string.IsNullOrEmpty(current) || current == "none") return reason;
+        if (current.Contains(reason)) return current;
+        return current + "|" + reason;
+    }
     static string Esc(string s) => s?.Replace(",", ";").Replace("\n", " ") ?? "";
     static string Safe(string s) => System.Text.RegularExpressions.Regex.Replace(s ?? "x", @"[^a-zA-Z0-9_\-]", "_");
 }

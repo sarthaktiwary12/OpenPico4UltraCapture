@@ -11,7 +11,14 @@ public class NativeIMUBridge : MonoBehaviour
     public bool IsActive { get; private set; }
     public bool HasGravityData { get; private set; }
     public bool IsUsingReconstructedAcceleration { get; private set; }
+    public bool AccSensorRegistered { get; private set; }
+    public bool GyroSensorRegistered { get; private set; }
+    public bool GravitySensorRegistered { get; private set; }
+    public bool LinearSensorRegistered { get; private set; }
     public bool HasFreshData => Time.realtimeSinceStartup - _lastSensorUpdateS < 0.5f;
+    public float SecondsSinceLastUpdateS => _lastSensorUpdateS <= 0f
+        ? float.PositiveInfinity
+        : Mathf.Max(0f, Time.realtimeSinceStartup - _lastSensorUpdateS);
 
     private float _lastSensorUpdateS;
     private bool _loggedFirstAccelSample;
@@ -55,6 +62,10 @@ public class NativeIMUBridge : MonoBehaviour
             if (_sensorManager == null)
             {
                 IsActive = false;
+                AccSensorRegistered = false;
+                GyroSensorRegistered = false;
+                GravitySensorRegistered = false;
+                LinearSensorRegistered = false;
                 Input.gyro.enabled = true;
                 Debug.LogWarning("[IMU] Android SensorManager unavailable, using Unity fallback.");
                 return;
@@ -69,6 +80,10 @@ public class NativeIMUBridge : MonoBehaviour
             bool gravOk = _gravSensor != null && _sensorManager.Call<bool>("registerListener", _gravListener, _gravSensor, 0);
             bool linOk = _linSensor != null && _sensorManager.Call<bool>("registerListener", _linListener, _linSensor, 0);
             bool gyroOk = _gyroSensor != null && _sensorManager.Call<bool>("registerListener", _gyroListener, _gyroSensor, 0);
+            AccSensorRegistered = accOk;
+            GyroSensorRegistered = gyroOk;
+            GravitySensorRegistered = gravOk;
+            LinearSensorRegistered = linOk;
 
             // Activate if we have ANY useful sensor data path. On PICO, the XR runtime
             // may consume the gyroscope exclusively, but gravity and accelerometer can
@@ -87,9 +102,23 @@ public class NativeIMUBridge : MonoBehaviour
             if (IsActive) Debug.Log($"[IMU] Android sensors OK (acc={accOk}, grav={gravOk}, lin={linOk}, gyro={gyroOk})");
             else Debug.LogWarning("[IMU] No Android sensors registered, using Unity fallback only.");
         }
-        catch (Exception e) { Debug.LogWarning($"[IMU] Native fail: {e.Message}"); IsActive = false; Input.gyro.enabled = true; }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[IMU] Native fail: {e.Message}");
+            IsActive = false;
+            AccSensorRegistered = false;
+            GyroSensorRegistered = false;
+            GravitySensorRegistered = false;
+            LinearSensorRegistered = false;
+            Input.gyro.enabled = true;
+        }
 #else
-        IsActive = false; Input.gyro.enabled = true;
+        IsActive = false;
+        AccSensorRegistered = false;
+        GyroSensorRegistered = false;
+        GravitySensorRegistered = false;
+        LinearSensorRegistered = false;
+        Input.gyro.enabled = true;
 #endif
     }
 
@@ -244,8 +273,16 @@ public class NativeIMUBridge : MonoBehaviour
         HasGravityData = Gravity.sqrMagnitude > 1e-8f;
         LinearAcceleration = Input.gyro.userAcceleration;
         IsUsingReconstructedAcceleration = false;
+        _lastSensorUpdateS = Time.realtimeSinceStartup;
     }
 #endif
+
+    public string BuildRegistrationStatus()
+    {
+        float age = SecondsSinceLastUpdateS;
+        string ageText = float.IsInfinity(age) ? "inf" : age.ToString("F3");
+        return $"active={IsActive};acc_registered={AccSensorRegistered};gyro_registered={GyroSensorRegistered};grav_registered={GravitySensorRegistered};lin_registered={LinearSensorRegistered};fresh={HasFreshData};update_age_s={ageText}";
+    }
 
     void OnDestroy()
     {

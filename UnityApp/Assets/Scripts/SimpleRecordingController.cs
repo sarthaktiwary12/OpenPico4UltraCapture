@@ -1,8 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Reflection;
 using System.Text;
 using UnityEngine;
 using UnityEngine.UI;
@@ -40,24 +38,31 @@ public class SimpleRecordingController : MonoBehaviour
     [Header("Capture Guards")]
     public bool blockStartWhenHandTrackingUnavailable = false;
 
+    [Header("Clap Control")]
+    public bool enableClapToggle = true;
+    public float clapWarmupSeconds = 5f;
+    public float clapTriggerDistanceM = 0.10f;
+    public float clapResetDistanceM = 0.25f;
+    public float clapMinClosingSpeedMps = 0.20f;
+    public float clapCooldownSeconds = 1.5f;
+    public bool requireBothHandsTrackedForClap = true;
+
     [Header("Remote Control")]
-    public bool enableAdbRemoteControl = true;
+    public bool enableAdbRemoteControl = false;
     public float remoteCommandPollInterval = 0.25f;
 
     private bool _recording;
     private float _startTime;
-    private bool _pinchWasDown;
-    private float _stopCooldownUntil;
     private bool _handTrackingReady;
     private float _handTrackingReadyTime;
     private string _sessionDir;
     private long _videoStartTimeMs;
     private string _videoBackend = "none";
     private string _directVideoPath;
-    private bool _preflightOverrideArmed;
-    private float _preflightOverrideUntilS;
+    private long _videoStopTimeMs;
     private bool _stallDetectedLogged;
     private string _pendingPreflightResult;
+    private readonly List<string> _videoSearchDiagnostics = new List<string>(64);
     private float _nextRemotePollTime;
     private string _remoteCmdPath;
     private string _remoteStatusPath;
@@ -75,6 +80,8 @@ public class SimpleRecordingController : MonoBehaviour
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
         "/sdcard/PICO/SpatialVideo",
+        "/sdcard/Movies/SpatialMP4",
+        "/sdcard/Movies/ScreenRecording",
         "/sdcard/DCIM/ScreenRecording",
         "/sdcard/PICO/Videos",
         "/sdcard/DCIM/Camera",
@@ -84,7 +91,7 @@ public class SimpleRecordingController : MonoBehaviour
 
     void Awake()
     {
-        // Keep update loop alive for ADB remote control even if focus/user-presence changes.
+        // Keep update loop alive even if focus/user-presence changes.
         Application.runInBackground = true;
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
         TryAcquireWakeLock();
@@ -123,7 +130,7 @@ public class SimpleRecordingController : MonoBehaviour
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
         SetHudVisible(true);
         SetIdle();
-        Debug.Log("[Controller] Ready. Pinch fingers together to start/stop recording (hands-only mode).");
+        Debug.Log("[Controller] Ready. Clap hands to start/stop recording (hands-only mode).");
         StartCoroutine(LogDiagnostics());
         StartCoroutine(InitHandTrackingRuntime());
     }
@@ -197,15 +204,11 @@ public class SimpleRecordingController : MonoBehaviour
         // without requiring manifest metadata (which causes startup hang on current firmware).
         for (int attempt = 0; attempt < 3; attempt++)
         {
-            try
-            {
-                PXR_Plugin.HandTracking.UPxr_SetActiveInputDevice(ActiveInputDevice.ControllerAndHandActive);
+            bool setInputOk = TrySetControllerAndHandActiveInputDevice();
+            if (setInputOk)
                 Debug.Log($"[Controller] SetActiveInputDevice(ControllerAndHandActive) called (attempt {attempt + 1})");
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogWarning($"[Controller] SetActiveInputDevice failed (attempt {attempt + 1}): {e.Message}");
-            }
+            else
+                Debug.LogWarning($"[Controller] SetActiveInputDevice API not available in this SDK (attempt {attempt + 1}).");
 
             yield return new WaitForSeconds(1.5f);
 
@@ -234,7 +237,41 @@ public class SimpleRecordingController : MonoBehaviour
             }
         }
 
-        Debug.LogWarning("[Controller] Hand tracking runtime activation did not confirm after 3 attempts. Pinch input may not work.");
+        Debug.LogWarning("[Controller] Hand tracking runtime activation did not confirm after 3 attempts. Clap input may not work.");
+    }
+
+    static bool TrySetControllerAndHandActiveInputDevice()
+    {
+        try
+        {
+            var handTrackingType = typeof(PXR_Plugin.HandTracking);
+            var setMethod = handTrackingType.GetMethod(
+                "UPxr_SetActiveInputDevice",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            if (setMethod == null)
+                return false;
+
+            var enumType = handTrackingType.Assembly.GetType("Unity.XR.PXR.ActiveInputDevice");
+            if (enumType == null)
+                return false;
+
+            string enumName = null;
+            if (System.Enum.IsDefined(enumType, "ControllerAndHandActive"))
+                enumName = "ControllerAndHandActive";
+            else if (System.Enum.IsDefined(enumType, "ControllerAndHand"))
+                enumName = "ControllerAndHand";
+
+            if (string.IsNullOrEmpty(enumName))
+                return false;
+
+            object enumValue = System.Enum.Parse(enumType, enumName);
+            setMethod.Invoke(null, new[] { enumValue });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 #endif
 
@@ -277,7 +314,7 @@ public class SimpleRecordingController : MonoBehaviour
     {
         try
         {
-            CheckControllerInput();
+            CheckClapInput();
 
             if (_recording)
             {
@@ -301,246 +338,231 @@ public class SimpleRecordingController : MonoBehaviour
         }
     }
 
-    void CheckControllerInput()
-    {
-        // ── Pinch-only input (no controller/remote) ──
-        // Pinch fingers together to start recording, pinch again to stop.
-        // 2-second cooldown after stop prevents accidental immediate restart.
-
-        bool pinch = CheckHandTrackingPinch();
-
-        // Edge detection: only fire on pinch-down, not hold
-        if (pinch && !_pinchWasDown)
-        {
-            // Cooldown guard after stop
-            if (Time.time < _stopCooldownUntil)
-            {
-                Debug.Log("[Hand] Pinch ignored — cooldown active after stop.");
-            }
-            else if (!_recording)
-            {
-                Debug.Log("[Hand] PINCH → Start recording");
-                if (PreflightAllowsStart())
-                    StartRecording();
-            }
-            else
-            {
-                Debug.Log("[Hand] PINCH → Stop recording");
-                StopRecording();
-                _stopCooldownUntil = Time.time + 2f;
-            }
-        }
-        _pinchWasDown = pinch;
-    }
-
     // ----- Hand tracking state -----
     private int _handFrameCount;
     private int _handDiagLogCount;
     private XRHandSubsystem _xrHandSub;
     private bool _xrHandSubSearched;
-    private string _handMethod = "";
+    private bool _clapArmed = true;
+    private float _lastClapTime = -99f;
+    private float _lastPalmSampleTime = -1f;
+    private float _lastPalmDistance = -1f;
+    private float _lastClapClosingSpeed;
+    private string _lastClapSource = "none";
 
-    bool CheckHandTrackingPinch()
+    void CheckClapInput()
     {
-        // Delay to let XR subsystem fully initialize.
+        if (!enableClapToggle)
+            return;
+
+        // Delay to let XR subsystems fully initialize after app launch.
         if (!_handTrackingReady)
         {
             if (_handTrackingReadyTime == 0f)
-                _handTrackingReadyTime = Time.time + 5f;
-            if (Time.time < _handTrackingReadyTime)
-                return false;
+                _handTrackingReadyTime = Time.time + Mathf.Max(0f, clapWarmupSeconds);
+
+            float remaining = _handTrackingReadyTime - Time.time;
+            if (remaining > 0f)
+            {
+                _handStatus = $"warming_up {remaining:F1}s";
+                return;
+            }
+
             _handTrackingReady = true;
-            Debug.Log("[Hand] Starting hand tracking polling (5s delay elapsed).");
+            Debug.Log("[Hand] Starting clap polling.");
         }
 
         _handFrameCount++;
-        // Only poll every 3rd frame.
-        if (_handFrameCount % 3 != 0)
-            return false;
+        // Poll every other frame to keep runtime overhead low.
+        if (_handFrameCount % 2 != 0)
+            return;
 
-        bool pinchDetected = false;
-
-        // ====================================================================
-        // METHOD 1: XR Input devices with HandTracking characteristic
-        //   (OpenXR HandInteractionProfile creates these automatically)
-        // ====================================================================
-        var handDevices = new List<InputDevice>();
-        InputDevices.GetDevicesWithCharacteristics(
-            InputDeviceCharacteristics.HandTracking, handDevices);
-
-        foreach (var dev in handDevices)
+        if (!TryGetPalmPositions(out Vector3 leftPalm, out Vector3 rightPalm, out string source))
         {
-            // Try trigger (maps to pinch in HandInteractionProfile)
-            if (dev.TryGetFeatureValue(CommonUsages.trigger, out float trigVal) && trigVal > 0.5f)
-            {
-                pinchDetected = true;
-                _handMethod = "XRInput-trigger";
-            }
-            if (dev.TryGetFeatureValue(CommonUsages.triggerButton, out bool trigBtn) && trigBtn)
-            {
-                pinchDetected = true;
-                _handMethod = "XRInput-triggerBtn";
-            }
-            // Try grip (maps to grasp in HandInteractionProfile)
-            if (dev.TryGetFeatureValue(CommonUsages.grip, out float gripVal) && gripVal > 0.5f)
-            {
-                pinchDetected = true;
-                _handMethod = "XRInput-grip";
-            }
-            if (dev.TryGetFeatureValue(CommonUsages.primaryButton, out bool primBtn) && primBtn)
-            {
-                pinchDetected = true;
-                _handMethod = "XRInput-primaryBtn";
-            }
+            _lastPalmSampleTime = -1f;
+            _lastPalmDistance = -1f;
+            _handStatus = "tracking_lost";
+            return;
         }
 
-        // ====================================================================
-        // METHOD 2: XRHandSubsystem (com.unity.xr.hands via OpenXR)
-        //   Provides raw joint positions - detect pinch by finger distance
-        // ====================================================================
-        if (!pinchDetected)
+        float now = Time.time;
+        float palmDistance = Vector3.Distance(leftPalm, rightPalm);
+        float closingSpeed = 0f;
+        if (_lastPalmSampleTime > 0f)
         {
-            if (!_xrHandSubSearched || (_xrHandSub == null && _handFrameCount % 90 == 0))
-            {
-                _xrHandSubSearched = true;
-                var subs = new List<XRHandSubsystem>();
-                SubsystemManager.GetSubsystems(subs);
-                _xrHandSub = subs.Count > 0 ? subs[0] : null;
-                if (_xrHandSub != null)
-                    Debug.Log($"[Hand] XRHandSubsystem found: {_xrHandSub.subsystemDescriptor.id}, running={_xrHandSub.running}");
-            }
-
-            if (_xrHandSub != null && _xrHandSub.running)
-            {
-                if (CheckXRHandPinch(_xrHandSub.rightHand, "R") ||
-                    CheckXRHandPinch(_xrHandSub.leftHand, "L"))
-                {
-                    pinchDetected = true;
-                    _handMethod = "XRHands-joint";
-                }
-            }
+            float dt = Mathf.Max(0.0001f, now - _lastPalmSampleTime);
+            // Positive speed means palms are moving closer together.
+            closingSpeed = (_lastPalmDistance - palmDistance) / dt;
         }
 
-        // ====================================================================
-        // METHOD 3: PICO native API (may work in OpenXR mode via native lib)
-        // ====================================================================
+        _lastPalmSampleTime = now;
+        _lastPalmDistance = palmDistance;
+
+        if (!_clapArmed && palmDistance >= clapResetDistanceM)
+            _clapArmed = true;
+
+        if (_handFrameCount % 24 == 0)
+            _handStatus = $"src={source} d={palmDistance:F2}m v={closingSpeed:F2}m/s armed={_clapArmed}";
+
+        bool cooldownActive = now - _lastClapTime < clapCooldownSeconds;
+        bool clapDetected = _clapArmed
+            && !cooldownActive
+            && palmDistance <= clapTriggerDistanceM
+            && closingSpeed >= clapMinClosingSpeedMps;
+
+        if (!clapDetected)
+            return;
+
+        _clapArmed = false;
+        _lastClapTime = now;
+        _lastClapClosingSpeed = closingSpeed;
+        _lastClapSource = source;
+
+        if (_handDiagLogCount < 12)
+        {
+            _handDiagLogCount++;
+            Debug.Log($"[Hand] CLAP via {source}, dist={palmDistance:F3}m speed={closingSpeed:F2}m/s");
+        }
+
+        if (!_recording)
+        {
+            Debug.Log("[Hand] CLAP -> Start recording");
+            if (PreflightAllowsStart())
+                StartRecording();
+        }
+        else
+        {
+            Debug.Log("[Hand] CLAP -> Stop recording");
+            StopRecording();
+        }
+    }
+
+    bool TryGetPalmPositions(out Vector3 leftPalm, out Vector3 rightPalm, out string source)
+    {
+        leftPalm = Vector3.zero;
+        rightPalm = Vector3.zero;
+        source = "none";
+
+        if (TryGetPalmsFromXRHands(out leftPalm, out rightPalm))
+        {
+            source = "XRHands";
+            return true;
+        }
+
 #if PICO_XR
-        if (!pinchDetected)
+        if (TryGetPalmFromPico(HandType.HandLeft, out leftPalm) &&
+            TryGetPalmFromPico(HandType.HandRight, out rightPalm))
         {
-            try
-            {
-                if (CheckPicoNativePinch(HandType.HandRight, "R") ||
-                    CheckPicoNativePinch(HandType.HandLeft, "L"))
-                {
-                    pinchDetected = true;
-                    _handMethod = "PICO-native";
-                }
-            }
-            catch (System.Exception e)
-            {
-                if (_handDiagLogCount < 3)
-                    Debug.LogWarning($"[Hand] PICO native error: {e.Message}");
-            }
+            source = "PICO-native";
+            return true;
         }
 #endif
 
-        // ====================================================================
-        // Update on-screen status every ~0.5s
-        // ====================================================================
-        if (_handFrameCount % 36 == 0)
-            UpdateHandStatus(handDevices);
-
-        if (pinchDetected)
+        if (TryGetPalmFromXRNode(XRNode.LeftHand, out leftPalm) &&
+            TryGetPalmFromXRNode(XRNode.RightHand, out rightPalm))
         {
-            if (_handDiagLogCount < 10)
-            {
-                _handDiagLogCount++;
-                Debug.Log($"[Hand] PINCH via {_handMethod}");
-            }
+            source = "XRInput";
             return true;
         }
 
         return false;
     }
 
-    bool CheckXRHandPinch(XRHand hand, string label)
+    bool TryGetPalmsFromXRHands(out Vector3 leftPalm, out Vector3 rightPalm)
     {
-        if (!hand.isTracked) return false;
-        var thumbTip = hand.GetJoint(XRHandJointID.ThumbTip);
-        var indexTip = hand.GetJoint(XRHandJointID.IndexTip);
-        if (!thumbTip.TryGetPose(out Pose tp) || !indexTip.TryGetPose(out Pose ip))
+        leftPalm = Vector3.zero;
+        rightPalm = Vector3.zero;
+
+        if (!_xrHandSubSearched || (_xrHandSub == null && _handFrameCount % 90 == 0))
+        {
+            _xrHandSubSearched = true;
+            var subs = new List<XRHandSubsystem>();
+            SubsystemManager.GetSubsystems(subs);
+            _xrHandSub = subs.Count > 0 ? subs[0] : null;
+            if (_xrHandSub != null && _handDiagLogCount < 4)
+            {
+                _handDiagLogCount++;
+                Debug.Log($"[Hand] XRHandSubsystem found: {_xrHandSub.subsystemDescriptor.id}, running={_xrHandSub.running}");
+            }
+        }
+
+        if (_xrHandSub == null || !_xrHandSub.running)
             return false;
-        float dist = Vector3.Distance(tp.position, ip.position);
-        return dist < 0.04f; // 4cm pinch threshold — reliable for hands-only operation
+
+        bool leftTracked = _xrHandSub.leftHand.isTracked;
+        bool rightTracked = _xrHandSub.rightHand.isTracked;
+        if (requireBothHandsTrackedForClap && (!leftTracked || !rightTracked))
+            return false;
+
+        if (!TryGetPalmFromXRHand(_xrHandSub.leftHand, out leftPalm))
+            return false;
+        if (!TryGetPalmFromXRHand(_xrHandSub.rightHand, out rightPalm))
+            return false;
+
+        return true;
+    }
+
+    static bool TryGetPalmFromXRHand(XRHand hand, out Vector3 palm)
+    {
+        palm = Vector3.zero;
+        if (!hand.isTracked)
+            return false;
+
+        var palmJoint = hand.GetJoint(XRHandJointID.Palm);
+        if (palmJoint.TryGetPose(out Pose palmPose))
+        {
+            palm = palmPose.position;
+            return true;
+        }
+
+        var wristJoint = hand.GetJoint(XRHandJointID.Wrist);
+        if (wristJoint.TryGetPose(out Pose wristPose))
+        {
+            palm = wristPose.position;
+            return true;
+        }
+
+        return false;
     }
 
 #if PICO_XR
-    bool CheckPicoNativePinch(HandType hand, string label)
+    static bool TryGetPalmFromPico(HandType handType, out Vector3 palm)
     {
-        var aim = new HandAimState();
-        if (!PXR_Plugin.HandTracking.UPxr_GetHandTrackerAimState(hand, ref aim))
-            return false;
-        if ((aim.aimStatus & HandAimStatus.AimComputed) == 0)
-            return false;
-        return (aim.aimStatus & HandAimStatus.AimIndexPinching) != 0
-            || (aim.aimStatus & HandAimStatus.AimRayTouched) != 0;
-    }
-#endif
-
-    void UpdateHandStatus(List<InputDevice> handDevices)
-    {
-        var sb = new StringBuilder();
-
-        // Hand tracking XR input devices
-        sb.Append($"HandDevs:{handDevices.Count}");
-
-        // XRHandSubsystem status
-        if (_xrHandSub != null && _xrHandSub.running)
-        {
-            bool rT = _xrHandSub.rightHand.isTracked;
-            bool lT = _xrHandSub.leftHand.isTracked;
-            sb.Append($" Sub:R={rT},L={lT}");
-        }
-        else
-        {
-            sb.Append(_xrHandSub != null ? " Sub:stopped" : " Sub:none");
-        }
-
-        // PICO native status
-#if PICO_XR
+        palm = Vector3.zero;
         try
         {
-            var activeInput = PXR_Plugin.HandTracking.UPxr_GetHandTrackerActiveInputType();
-            sb.Append($" PICO:{activeInput}");
-        }
-        catch { sb.Append(" PICO:err"); }
-#endif
+            var jointLocations = new HandJointLocations();
+            if (!PXR_Plugin.HandTracking.UPxr_GetHandTrackerJointLocations(handType, ref jointLocations))
+                return false;
+            if (jointLocations.jointLocations == null || jointLocations.jointLocations.Length == 0)
+                return false;
 
-        // Log details a few times
-        if (_handDiagLogCount < 5)
+            var rootJoint = jointLocations.jointLocations[0];
+            if (((ulong)rootJoint.locationStatus & (ulong)HandLocationStatus.PositionValid) == 0)
+                return false;
+
+            palm = rootJoint.pose.Position.ToVector3();
+            return true;
+        }
+        catch
         {
-            _handDiagLogCount++;
-            Debug.Log($"[Hand] {sb}");
-
-            // Log all XR devices for diagnostics
-            var allDevs = new List<InputDevice>();
-            InputDevices.GetDevices(allDevs);
-            foreach (var d in allDevs)
-                Debug.Log($"[Hand]   dev: {d.name} chars={d.characteristics}");
-
-#if PICO_XR
-            try
-            {
-                bool settingOn = PXR_Plugin.HandTracking.UPxr_GetHandTrackerSettingState();
-                var aimR = new HandAimState();
-                bool gotR = PXR_Plugin.HandTracking.UPxr_GetHandTrackerAimState(HandType.HandRight, ref aimR);
-                Debug.Log($"[Hand]   PICO setting={settingOn}, R.got={gotR}, R.status={aimR.aimStatus}");
-            }
-            catch (System.Exception e) { Debug.Log($"[Hand]   PICO err: {e.Message}"); }
-#endif
+            return false;
         }
+    }
+#endif
 
-        _handStatus = sb.ToString();
+    static bool TryGetPalmFromXRNode(XRNode handNode, out Vector3 palm)
+    {
+        palm = Vector3.zero;
+        var device = InputDevices.GetDeviceAtXRNode(handNode);
+        if (!device.isValid)
+            return false;
+
+        if (!device.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 position))
+            return false;
+
+        palm = position;
+        return true;
     }
 
     void PollRemoteCommand()
@@ -695,7 +717,11 @@ public class SimpleRecordingController : MonoBehaviour
 
             // Start POV video recording
             _videoStartTimeMs = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _videoStopTimeMs = 0;
             _directVideoPath = Path.Combine(_sessionDir, "pov_video.mp4");
+            _videoSearchDiagnostics.Clear();
+            AddVideoDiag($"start_ms={_videoStartTimeMs}");
+            AddVideoDiag($"backend_pre={_videoBackend}");
             StartVideoRecording();
 
             _recording = true;
@@ -736,12 +762,22 @@ public class SimpleRecordingController : MonoBehaviour
         try
         {
             sensorRecorder.LogAction("task_end", "capture", "user_initiated");
+            sensorRecorder.MarkFinalizePhaseStart();
+            _videoStopTimeMs = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             // Stop POV video recording
             StopVideoRecording();
 
             bodyTrackingRecorder?.StopCapture();
             spatialMeshCapture?.StopCapture();
+
+            if (bodyTrackingRecorder != null)
+            {
+                sensorRecorder.UpdateBodyMetrics(
+                    bodyTrackingRecorder.NativeFrameRatio,
+                    bodyTrackingRecorder.FallbackOnlyFrameRatio,
+                    bodyTrackingRecorder.FramesSampled);
+            }
 
             // NOTE: StopSession is deferred to end of FindAndCopyVideo so that
             // LogAction("video_saved") can still write to the action log.
@@ -756,7 +792,7 @@ public class SimpleRecordingController : MonoBehaviour
             }
 
             sensorRecorder.LogAction("quality_snapshot", "live",
-                $"hand_real_ratio={sensorRecorder.RealHandFrameRatio:F3};imu_gravity_ratio={sensorRecorder.ImuGravityFrameRatio:F3};body_joints={bodyTrackingRecorder?.LastWrittenJointCount ?? 0}");
+                $"hand_real_ratio={sensorRecorder.RealHandFrameRatio:F3};imu_gravity_ratio={sensorRecorder.ImuGravityFrameRatio:F3};body_joints={bodyTrackingRecorder?.LastWrittenJointCount ?? 0};body_native_ratio={bodyTrackingRecorder?.NativeFrameRatio ?? 0f:F3};body_fallback_ratio={bodyTrackingRecorder?.FallbackOnlyFrameRatio ?? 0f:F3}");
 
             _recording = false;
 
@@ -788,7 +824,8 @@ public class SimpleRecordingController : MonoBehaviour
         if (TryStartCamera2Video())
         {
             _videoBackend = "camera2";
-            sensorRecorder.LogAction("video_start", _videoBackend, "ok");
+            sensorRecorder.LogAction("video_start", _videoBackend, "pending");
+            AddVideoDiag("camera2_start=pending");
             return;
         }
 
@@ -796,7 +833,8 @@ public class SimpleRecordingController : MonoBehaviour
         if (TryStartVideoShellBroadcast())
         {
             _videoBackend = "shell_broadcast";
-            sensorRecorder.LogAction("video_start", _videoBackend, "ok");
+            sensorRecorder.LogAction("video_start", _videoBackend, "pending_dispatch_ok");
+            AddVideoDiag("shell_start=dispatch_ok");
             return;
         }
 
@@ -873,9 +911,23 @@ public class SimpleRecordingController : MonoBehaviour
         if (_cam2Recorder != null)
         {
             if (_cam2Recorder.StartRecording())
+            {
                 Debug.Log("[Video] Camera2 recording started successfully");
+                sensorRecorder?.LogAction("video_start", "camera2", "ok");
+                AddVideoDiag("camera2_start=ok");
+            }
             else
+            {
                 Debug.LogError("[Video] Camera2 StartRecording call failed");
+                sensorRecorder?.LogAction("video_start", "camera2", "failed");
+                AddVideoDiag("camera2_start=failed");
+                if (TryStartVideoShellBroadcast())
+                {
+                    _videoBackend = "shell_broadcast";
+                    sensorRecorder?.LogAction("video_start", "shell_broadcast", "pending_dispatch_ok");
+                    AddVideoDiag("camera2_start_failed_fallback_shell=dispatch_ok");
+                }
+            }
         }
     }
 
@@ -898,6 +950,9 @@ public class SimpleRecordingController : MonoBehaviour
             _cam2Session?.Close();
             _cam2Session = null;
             // Don't close recorder yet — let the file finalize. Close in FindAndCopyVideo.
+            sensorRecorder.LogAction("video_stop", _videoBackend, stopped ? "ok" : "failed");
+            AddVideoDiag($"camera2_stop={(stopped ? "ok" : "failed")}");
+            return;
         }
 
         if (!stopped && _videoBackend == "shell_broadcast")
@@ -910,7 +965,9 @@ public class SimpleRecordingController : MonoBehaviour
             stopped = TryStopVideoShellBroadcast();
         }
 
-        sensorRecorder.LogAction("video_stop", _videoBackend, stopped ? "ok" : "failed");
+        // Broadcast dispatch success is not proof that the recorder finalized correctly.
+        sensorRecorder.LogAction("video_stop", _videoBackend, stopped ? "pending_dispatch_ok" : "failed");
+        AddVideoDiag($"shell_stop={(stopped ? "dispatch_ok" : "failed")}");
     }
 
     bool TryStartVideoShellBroadcast()
@@ -1001,84 +1058,134 @@ public class SimpleRecordingController : MonoBehaviour
 
     IEnumerator FindAndCopyVideo(float dur, long frames)
     {
-        // Camera2 writes directly to _directVideoPath
+        bool videoSaved = false;
+        string failureReason = "unknown";
+        string resolvedPath = null;
+        long resolvedSize = 0;
+
+        // Camera2 writes directly to _directVideoPath.
         if (_videoBackend == "camera2" && !string.IsNullOrEmpty(_directVideoPath))
         {
-            // Close recorder to finalize the file
             _cam2Recorder?.Close();
             _cam2Recorder = null;
 
-            for (int i = 0; i < 10; i++)
+            long lastSize = -1;
+            int stableHits = 0;
+            for (int i = 0; i < 24; i++)
             {
-                if (File.Exists(_directVideoPath) && new FileInfo(_directVideoPath).Length > 0)
+                if (TryGetFileSize(_directVideoPath, out long size))
                 {
-                    long fileSize = new FileInfo(_directVideoPath).Length;
-                    sensorRecorder?.LogAction("video_saved", "pov_video.mp4", $"src=camera2,size={fileSize}");
-                    sensorRecorder.StopSession();
-                    if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
-                    if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
-                    SetStatus($"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK ({fileSize / 1024}KB)\n{BuildQualityFooter()}");
-                    yield break;
+                    if (size == lastSize && size > 0) stableHits++;
+                    else stableHits = 0;
+                    lastSize = size;
+                    if (stableHits >= 2)
+                    {
+                        videoSaved = true;
+                        resolvedPath = _directVideoPath;
+                        resolvedSize = size;
+                        break;
+                    }
                 }
                 yield return new WaitForSeconds(0.5f);
             }
-            sensorRecorder?.LogAction("video_not_found", _videoBackend, "camera2_output_missing");
+
+            if (!videoSaved)
+            {
+                failureReason = "camera2_output_missing_or_unstable";
+                sensorRecorder?.LogAction("video_save_failed", _videoBackend, failureReason);
+                sensorRecorder?.LogAction("video_not_found", _videoBackend, failureReason);
+            }
         }
 
-        // Give the system recorder time to finalize and retry for up to ~20s.
-        string videoPath = null;
-        for (int attempt = 0; attempt < 5 && videoPath == null; attempt++)
+        if (!videoSaved)
         {
-            yield return new WaitForSeconds(attempt == 0 ? 3f : 4f);
-            videoPath = FindNewestVideo();
-            Debug.Log($"[Video] Search attempt {attempt + 1}: {(videoPath ?? "none")}");
+            string candidate = null;
+            long candidateModified = 0;
+            for (int attempt = 0; attempt < 8 && !videoSaved; attempt++)
+            {
+                yield return new WaitForSeconds(attempt == 0 ? 2.5f : 3.0f);
+                candidate = FindNewestVideo(out candidateModified);
+                string searchMeta = $"attempt={attempt + 1};path={(candidate ?? "none")};modified_ms={candidateModified}";
+                sensorRecorder?.LogAction("video_search_attempt", _videoBackend, searchMeta);
+                AddVideoDiag(searchMeta);
+
+                if (candidate == null)
+                    continue;
+
+                // Wait briefly for source file size to stabilize before copy.
+                long lastSize = -1;
+                int stableHits = 0;
+                long sourceSize = 0;
+                bool sourceStable = false;
+                for (int k = 0; k < 10; k++)
+                {
+                    if (TryGetFileSize(candidate, out sourceSize))
+                    {
+                        if (sourceSize == lastSize && sourceSize > 0) stableHits++;
+                        else stableHits = 0;
+                        lastSize = sourceSize;
+                        if (stableHits >= 2)
+                        {
+                            sourceStable = true;
+                            break;
+                        }
+                    }
+                    yield return new WaitForSeconds(0.4f);
+                }
+
+                if (!sourceStable)
+                {
+                    failureReason = "source_not_stable";
+                    sensorRecorder?.LogAction("video_save_failed", _videoBackend, $"reason={failureReason};src={candidate}");
+                    continue;
+                }
+
+                if (TryCopyVideoToSession(candidate, out string destPath, out long destSize, out string copyFail))
+                {
+                    videoSaved = true;
+                    resolvedPath = destPath;
+                    resolvedSize = destSize;
+                    break;
+                }
+
+                failureReason = $"copy_failed:{copyFail}";
+                sensorRecorder?.LogAction("video_save_failed", _videoBackend, $"reason={failureReason};src={candidate}");
+            }
         }
+
         string statusMsg;
-
-        if (videoPath != null && _sessionDir != null)
+        if (videoSaved)
         {
-            try
-            {
-                string destPath = Path.Combine(_sessionDir, "pov_video.mp4");
-                File.Copy(videoPath, destPath, true);
-                sensorRecorder?.LogAction("video_saved", "pov_video.mp4", $"src={videoPath}");
-                Debug.Log($"[Video] Copied to session: {destPath}");
-                statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK";
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"[Video] Failed to copy video: {e.Message}");
-                statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo at: {videoPath}";
-            }
+            sensorRecorder?.LogAction("video_saved", "pov_video.mp4", $"src={resolvedPath};size={resolvedSize}");
+            statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo: OK ({resolvedSize / 1024}KB)";
         }
         else
         {
-            Debug.LogWarning("[Video] No video file found after recording.");
-            sensorRecorder?.LogAction("video_not_found", _videoBackend, "search_timeout");
+            if (string.IsNullOrEmpty(failureReason))
+                failureReason = "search_timeout";
+            sensorRecorder?.LogAction("video_not_found", _videoBackend, failureReason);
+            WriteVideoDiagnostics(failureReason, resolvedPath, resolvedSize);
             statusMsg = $"Saved!\n{frames} frames, {dur:F1}s\nVideo: not found";
         }
 
         statusMsg += "\n" + BuildQualityFooter();
-
-        // Now that all logging is done, close the session
         sensorRecorder.StopSession();
 
-        // Reset UI
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
         SetStatus(statusMsg);
     }
 
-    string FindNewestVideo()
+    string FindNewestVideo(out long bestTime)
     {
         string best = null;
-        long bestTime = _videoStartTimeMs - 5000; // Allow 5s tolerance before start
+        bestTime = _videoStartTimeMs - 5000; // Allow 5s tolerance before start
 
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
-            using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
-            using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
+            // Prefer MediaStore because recorder outputs are not always under a stable folder path.
+            TryFindVideoViaMediaStore(ref best, ref bestTime);
 
             foreach (string dir in VideoDirs)
             {
@@ -1109,7 +1216,7 @@ public class SimpleRecordingController : MonoBehaviour
                 catch { }
             }
 
-            // Also scan /sdcard recursively for any recent mp4
+            // Final fallback: recursive scan under /sdcard.
             if (best == null)
             {
                 Debug.Log("[Video] Scanning /sdcard for recent mp4 files...");
@@ -1126,6 +1233,50 @@ public class SimpleRecordingController : MonoBehaviour
             Debug.Log($"[Video] Found newest video: {best} (modified: {bestTime})");
 
         return best;
+    }
+
+    void TryFindVideoViaMediaStore(ref string best, ref long bestTime)
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            using var up = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+            using var act = up.GetStatic<AndroidJavaObject>("currentActivity");
+            if (act == null) return;
+            using var resolver = act.Call<AndroidJavaObject>("getContentResolver");
+            if (resolver == null) return;
+            using var media = new AndroidJavaClass("android.provider.MediaStore$Video$Media");
+            using var uri = media.GetStatic<AndroidJavaObject>("EXTERNAL_CONTENT_URI");
+
+            long cutoffSec = System.Math.Max(0L, (_videoStartTimeMs / 1000L) - 20L);
+            string[] projection = { "_data", "date_modified" };
+            string[] args = { cutoffSec.ToString() };
+            using var cursor = resolver.Call<AndroidJavaObject>("query", uri, projection, "date_modified >= ?", args, "date_modified DESC");
+            if (cursor == null) return;
+
+            int pathIndex = cursor.Call<int>("getColumnIndex", "_data");
+            int modifiedIndex = cursor.Call<int>("getColumnIndex", "date_modified");
+            if (pathIndex < 0 || modifiedIndex < 0) return;
+
+            while (cursor.Call<bool>("moveToNext"))
+            {
+                string path = cursor.Call<string>("getString", pathIndex);
+                if (string.IsNullOrEmpty(path) || !path.EndsWith(".mp4")) continue;
+                if (path.ToLower().Contains("tmp")) continue;
+                long modifiedMs = cursor.Call<long>("getLong", modifiedIndex) * 1000L;
+                if (modifiedMs > bestTime)
+                {
+                    bestTime = modifiedMs;
+                    best = path;
+                }
+            }
+        }
+        catch (System.Exception e)
+        {
+            AddVideoDiag($"media_store_error={e.GetType().Name}");
+            Debug.LogWarning($"[Video] MediaStore query failed: {e.Message}");
+        }
+#endif
     }
 
     void ScanDir(string path, ref string best, ref long bestTime, int depth)
@@ -1164,6 +1315,106 @@ public class SimpleRecordingController : MonoBehaviour
 #endif
     }
 
+    bool TryGetFileSize(string path, out long size)
+    {
+        size = 0;
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            return false;
+        try
+        {
+            size = new FileInfo(path).Length;
+            return size > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    bool TryCopyVideoToSession(string sourcePath, out string destPath, out long destSize, out string reason)
+    {
+        destPath = string.Empty;
+        destSize = 0;
+        reason = "unknown";
+
+        if (string.IsNullOrEmpty(_sessionDir))
+        {
+            reason = "missing_session_dir";
+            return false;
+        }
+        if (string.IsNullOrEmpty(sourcePath) || !File.Exists(sourcePath))
+        {
+            reason = "source_missing";
+            return false;
+        }
+
+        destPath = Path.Combine(_sessionDir, "pov_video.mp4");
+        try
+        {
+            string srcFull = Path.GetFullPath(sourcePath);
+            string dstFull = Path.GetFullPath(destPath);
+            if (!string.Equals(srcFull, dstFull, System.StringComparison.Ordinal))
+                File.Copy(sourcePath, destPath, true);
+
+            if (!TryGetFileSize(destPath, out destSize))
+            {
+                reason = "dest_zero";
+                return false;
+            }
+
+            reason = "ok";
+            return true;
+        }
+        catch (System.Exception e)
+        {
+            reason = e.GetType().Name;
+            return false;
+        }
+    }
+
+    void AddVideoDiag(string line)
+    {
+        if (_videoSearchDiagnostics.Count >= 120) return;
+        _videoSearchDiagnostics.Add($"{System.DateTime.UtcNow:O} | {line}");
+    }
+
+    void WriteVideoDiagnostics(string reason, string candidatePath, long candidateSize)
+    {
+        if (string.IsNullOrEmpty(_sessionDir)) return;
+        try
+        {
+            string path = Path.Combine(_sessionDir, "video_diagnostics.json");
+            var sb = new StringBuilder(2048);
+            sb.AppendLine("{");
+            sb.AppendLine($"  \"backend\": \"{EscapeJson(_videoBackend)}\",");
+            sb.AppendLine($"  \"start_ms\": {_videoStartTimeMs},");
+            sb.AppendLine($"  \"stop_ms\": {_videoStopTimeMs},");
+            sb.AppendLine($"  \"reason\": \"{EscapeJson(reason ?? "unknown")}\",");
+            sb.AppendLine($"  \"candidate_path\": \"{EscapeJson(candidatePath ?? "")}\",");
+            sb.AppendLine($"  \"candidate_size\": {candidateSize},");
+            sb.AppendLine("  \"events\": [");
+            for (int i = 0; i < _videoSearchDiagnostics.Count; i++)
+            {
+                string suffix = i + 1 < _videoSearchDiagnostics.Count ? "," : "";
+                sb.AppendLine($"    \"{EscapeJson(_videoSearchDiagnostics[i])}\"{suffix}");
+            }
+            sb.AppendLine("  ]");
+            sb.AppendLine("}");
+            File.WriteAllText(path, sb.ToString());
+            sensorRecorder?.LogAction("video_diagnostics_written", _videoBackend, $"path={path}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] Failed writing diagnostics JSON: {e.Message}");
+        }
+    }
+
+    static string EscapeJson(string input)
+    {
+        if (string.IsNullOrEmpty(input)) return string.Empty;
+        return input.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+    }
+
     void RenderLiveStatus()
     {
         float elapsed = Time.time - _startTime;
@@ -1195,7 +1446,7 @@ public class SimpleRecordingController : MonoBehaviour
         }
 
         SetStatus(
-            $"REC  {min:D2}:{sec:D2}   PINCH to stop\n" +
+            $"REC  {min:D2}:{sec:D2}   CLAP to stop\n" +
             $"Frames: {sensorRecorder.FrameIndex}  FPS: {fps:F1}/{sensorRecorder.sampleRateHz:F0}\n" +
             $"Hands: {handStatus}  IMU: {imuStatus}  Body: {bodyStatus}");
     }
@@ -1322,15 +1573,16 @@ public class SimpleRecordingController : MonoBehaviour
 
         float handPct = sensorRecorder.RealHandFrameRatio * 100f;
         float imuPct = sensorRecorder.ImuGravityFrameRatio * 100f;
-        string body = bodyTrackingRecorder != null ? bodyTrackingRecorder.LastWrittenJointCount.ToString() : "0";
-        return $"Quality H={handPct:F0}% IMU={imuPct:F0}% Body={body}";
+        float bodyNativePct = bodyTrackingRecorder != null ? bodyTrackingRecorder.NativeFrameRatio * 100f : 0f;
+        return $"Quality H={handPct:F0}% IMU={imuPct:F0}% BodyNative={bodyNativePct:F0}%";
     }
 
     void SetIdle()
     {
         SetHudVisible(true);
-        string hint = "PINCH to start recording";
-        SetStatus($"{hint}\nHands: {_handStatus}");
+        string hint = "CLAP to start recording";
+        string lastClap = _lastClapTime > 0f ? $"Last clap: {_lastClapSource} {_lastClapClosingSpeed:F2}m/s" : "Last clap: -";
+        SetStatus($"{hint}\nHands: {_handStatus}\n{lastClap}");
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
     }
