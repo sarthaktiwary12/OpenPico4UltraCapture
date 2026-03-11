@@ -66,7 +66,38 @@ public class PassthroughEnabler : MonoBehaviour
 
         yield return new WaitForSeconds(0.25f);
         TryEnableOpenXRPassthrough();
+
+        // Retry up to 3 times if first attempt failed (PICO sometimes needs a second try)
+        for (int retry = 0; retry < 3 && !_enabled; retry++)
+        {
+            Debug.Log($"[Passthrough] Retry {retry + 1}/3 after {1 + retry}s...");
+            yield return new WaitForSeconds(1f + retry);
+            TryEnableOpenXRPassthrough();
+        }
+
+        if (!_enabled)
+            Debug.LogError("[Passthrough] All enable attempts failed — user will see black screen.");
+
         _pendingEnable = null;
+    }
+
+    /// <summary>Call from other scripts as a belt-and-suspenders backup.</summary>
+    public void ForceEnable()
+    {
+        if (_enabled) return;
+        enableOnStart = true;
+        TryEnableOpenXRPassthrough();
+        if (!_enabled)
+            StartCoroutine(ForceEnableRetry());
+    }
+
+    private IEnumerator ForceEnableRetry()
+    {
+        for (int i = 0; i < 3 && !_enabled; i++)
+        {
+            yield return new WaitForSeconds(1.5f);
+            TryEnableOpenXRPassthrough();
+        }
     }
 
     private void TryEnableOpenXRPassthrough()

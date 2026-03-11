@@ -667,8 +667,16 @@ public class SensorRecorder : MonoBehaviour
         return false;
     }
 
+    /// <summary>Grace period: during the first 10s after app launch, return true
+    /// with a warning instead of blocking, so hand tracking has time to initialize
+    /// via runtime activation.</summary>
+    private static float _appStartTime = -1f;
+
     public bool IsHandTrackingReadyForCapture(out string detail)
     {
+        if (_appStartTime < 0f) _appStartTime = Time.realtimeSinceStartup;
+        float elapsed = Time.realtimeSinceStartup - _appStartTime;
+
         _tmpHandSubsystems.Clear();
         SubsystemManager.GetSubsystems(_tmpHandSubsystems);
         int runningCount = 0;
@@ -724,6 +732,15 @@ public class SensorRecorder : MonoBehaviour
         bool nativeHandsTracked = nativeTrackedHands > 0;
         bool ok = xrTrackedHands || nativeHandsTracked;
         detail = $"perm={granted};subsystems_running={runningCount};tracked_hands={xrTrackedHands};tracked_devices={_tmpDevices.Count};pico_setting={picoSettingReady};pico_input={picoInput};native_hands={nativeTrackedHands}";
+
+        // Grace period: allow start during first 10s while hand tracking initializes at runtime
+        if (!ok && elapsed < 10f)
+        {
+            Debug.LogWarning($"[SensorRecorder] Hand tracking not confirmed yet (grace period {elapsed:F1}s/10s) — allowing start.");
+            detail += ";grace_period=true";
+            return true;
+        }
+
         return ok;
     }
 

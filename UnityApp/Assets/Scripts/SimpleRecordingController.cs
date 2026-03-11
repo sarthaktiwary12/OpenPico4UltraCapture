@@ -36,21 +36,18 @@ public class SimpleRecordingController : MonoBehaviour
 
     [Header("Hand Visualization")]
     public HandVisualizer handVisualizer;
-    public bool enableHandPinchToggle = false;
-    public bool requireHandNearButtonForPinch = false;
-    public float pinchProximityRadius = 0.15f;
 
     [Header("Capture Guards")]
-    public bool blockStartWhenHandTrackingUnavailable = true;
+    public bool blockStartWhenHandTrackingUnavailable = false;
 
     [Header("Remote Control")]
     public bool enableAdbRemoteControl = true;
     public float remoteCommandPollInterval = 0.25f;
 
     private bool _recording;
-    private bool _handNearButton;
     private float _startTime;
-    private bool _triggerWasDown;
+    private bool _pinchWasDown;
+    private float _stopCooldownUntil;
     private bool _handTrackingReady;
     private float _handTrackingReadyTime;
     private string _sessionDir;
@@ -107,13 +104,6 @@ public class SimpleRecordingController : MonoBehaviour
         if (handVisualizer == null)
             handVisualizer = new GameObject("HandVisualizer").AddComponent<HandVisualizer>();
 
-        // Headset-only operation requires pinch as the primary input.
-        if (!enableHandPinchToggle)
-        {
-            enableHandPinchToggle = true;
-            Debug.Log("[Controller] Hand pinch toggle forced ON.");
-        }
-
         string recordDir = Path.Combine(Application.persistentDataPath, "record");
         Directory.CreateDirectory(recordDir);
         _remoteCmdPath = Path.Combine(recordDir, "remote_cmd.txt");
@@ -133,7 +123,7 @@ public class SimpleRecordingController : MonoBehaviour
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
         SetHudVisible(true);
         SetIdle();
-        Debug.Log("[Controller] Ready. Point at button and pinch, or press A/Trigger to toggle recording.");
+        Debug.Log("[Controller] Ready. Pinch fingers together to start/stop recording (hands-only mode).");
         StartCoroutine(LogDiagnostics());
         StartCoroutine(InitHandTrackingRuntime());
     }
@@ -144,7 +134,7 @@ public class SimpleRecordingController : MonoBehaviour
         yield return new WaitForSeconds(3f);
 
 #if PICO_XR
-        // Request hand tracking permission at runtime
+        // Step 1: Request hand tracking permission at runtime
         try
         {
             Debug.Log("[Controller] Requesting hand tracking permission at runtime...");
@@ -161,7 +151,7 @@ public class SimpleRecordingController : MonoBehaviour
 
         yield return new WaitForSeconds(1f);
 
-        // Try to ensure OpenXR HandTracking subsystem is initialized
+        // Step 2: Try to ensure OpenXR HandTracking subsystem is initialized
         try
         {
             var handTrackingType = System.Type.GetType(
@@ -182,18 +172,71 @@ public class SimpleRecordingController : MonoBehaviour
             Debug.LogWarning($"[Controller] HandTracking subsystem init failed: {e.Message}");
         }
 
-        // Check hand tracking state
-        try
+        // Step 3: Activate dual input mode (controller + hand tracking simultaneously)
+        yield return ActivateDualInputMode();
+
+        // Step 4: Force-enable passthrough as a safety net
+        var ptEnabler = FindObjectOfType<PassthroughEnabler>();
+        if (ptEnabler != null)
         {
-            var activeInput = PXR_Plugin.HandTracking.UPxr_GetHandTrackerActiveInputType();
-            Debug.Log($"[Controller] Hand tracking active input: {activeInput}");
+            yield return new WaitForSeconds(1f);
+            ptEnabler.ForceEnable();
+            Debug.Log("[Controller] Passthrough ForceEnable called as safety net.");
         }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Controller] Hand tracking state query failed: {e.Message}");
-        }
+
+        // Now that hand tracking is activated, enable the recording guard
+        blockStartWhenHandTrackingUnavailable = true;
+        Debug.Log("[Controller] Hand tracking init complete. Recording guard enabled.");
 #endif
     }
+
+#if PICO_XR
+    IEnumerator ActivateDualInputMode()
+    {
+        // SetActiveInputDevice tells PICO runtime to enable BOTH controller and hand tracking
+        // without requiring manifest metadata (which causes startup hang on current firmware).
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                PXR_Plugin.HandTracking.UPxr_SetActiveInputDevice(ActiveInputDevice.ControllerAndHandActive);
+                Debug.Log($"[Controller] SetActiveInputDevice(ControllerAndHandActive) called (attempt {attempt + 1})");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[Controller] SetActiveInputDevice failed (attempt {attempt + 1}): {e.Message}");
+            }
+
+            yield return new WaitForSeconds(1.5f);
+
+            // Verify it took effect
+            try
+            {
+                bool settingOn = PXR_Plugin.HandTracking.UPxr_GetHandTrackerSettingState();
+                var activeInput = PXR_Plugin.HandTracking.UPxr_GetHandTrackerActiveInputType();
+                Debug.Log($"[Controller] Hand tracking verify: setting={settingOn}, activeInput={activeInput}");
+
+                if (settingOn)
+                {
+                    Debug.Log("[Controller] Hand tracking runtime activation succeeded.");
+                    yield break;
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[Controller] Hand tracking verify failed: {e.Message}");
+            }
+
+            if (attempt < 2)
+            {
+                Debug.Log($"[Controller] Hand tracking not ready yet, retrying in 2s...");
+                yield return new WaitForSeconds(2f);
+            }
+        }
+
+        Debug.LogWarning("[Controller] Hand tracking runtime activation did not confirm after 3 attempts. Pinch input may not work.");
+    }
+#endif
 
     void SetHudVisible(bool visible)
     {
@@ -245,10 +288,7 @@ public class SimpleRecordingController : MonoBehaviour
             {
                 // Refresh idle status to show live hand tracking state
                 if (_handTrackingReady && _handFrameCount % 36 == 0)
-                {
-                    _handNearButton = IsHandNearButton();
                     SetIdle();
-                }
             }
 
             PollRemoteCommand();
@@ -263,50 +303,34 @@ public class SimpleRecordingController : MonoBehaviour
 
     void CheckControllerInput()
     {
-        bool down = false;
+        // ── Pinch-only input (no controller/remote) ──
+        // Pinch fingers together to start recording, pinch again to stop.
+        // 2-second cooldown after stop prevents accidental immediate restart.
 
-        // --- Controller input ---
-        var right = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
-        if (right.isValid)
-        {
-            if (right.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb)
-                down = true;
-            if (right.TryGetFeatureValue(CommonUsages.primaryButton, out bool ab) && ab)
-                down = true;
-        }
+        bool pinch = CheckHandTrackingPinch();
 
-        var left = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
-        if (left.isValid)
+        // Edge detection: only fire on pinch-down, not hold
+        if (pinch && !_pinchWasDown)
         {
-            if (left.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb)
-                down = true;
-            if (left.TryGetFeatureValue(CommonUsages.primaryButton, out bool ab) && ab)
-                down = true;
-        }
-
-        if (!right.isValid && !left.isValid)
-        {
-            var devices = new List<InputDevice>();
-            InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.Controller, devices);
-            foreach (var dev in devices)
+            // Cooldown guard after stop
+            if (Time.time < _stopCooldownUntil)
             {
-                if (dev.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb)
-                    down = true;
-                if (dev.TryGetFeatureValue(CommonUsages.primaryButton, out bool ab) && ab)
-                    down = true;
+                Debug.Log("[Hand] Pinch ignored — cooldown active after stop.");
+            }
+            else if (!_recording)
+            {
+                Debug.Log("[Hand] PINCH → Start recording");
+                if (PreflightAllowsStart())
+                    StartRecording();
+            }
+            else
+            {
+                Debug.Log("[Hand] PINCH → Stop recording");
+                StopRecording();
+                _stopCooldownUntil = Time.time + 2f;
             }
         }
-
-        // --- Hand tracking pinch input ---
-        if (!down && enableHandPinchToggle)
-            down = CheckHandTrackingPinch();
-
-        if (down && !_triggerWasDown)
-        {
-            Debug.Log("[Controller] Input -> Toggle (hand or controller)");
-            OnToggle();
-        }
-        _triggerWasDown = down;
+        _pinchWasDown = pinch;
     }
 
     // ----- Hand tracking state -----
@@ -428,16 +452,6 @@ public class SimpleRecordingController : MonoBehaviour
 
         if (pinchDetected)
         {
-            _handNearButton = IsHandNearButton();
-            if (requireHandNearButtonForPinch && !_handNearButton)
-            {
-                if (_handDiagLogCount < 10)
-                {
-                    _handDiagLogCount++;
-                    Debug.Log($"[Hand] PINCH via {_handMethod} suppressed (hand not near button)");
-                }
-                return false;
-            }
             if (_handDiagLogCount < 10)
             {
                 _handDiagLogCount++;
@@ -457,7 +471,7 @@ public class SimpleRecordingController : MonoBehaviour
         if (!thumbTip.TryGetPose(out Pose tp) || !indexTip.TryGetPose(out Pose ip))
             return false;
         float dist = Vector3.Distance(tp.position, ip.position);
-        return dist < 0.03f; // 3cm pinch threshold
+        return dist < 0.04f; // 4cm pinch threshold — reliable for hands-only operation
     }
 
 #if PICO_XR
@@ -527,40 +541,6 @@ public class SimpleRecordingController : MonoBehaviour
         }
 
         _handStatus = sb.ToString();
-    }
-
-    bool IsHandNearButton()
-    {
-        if (btnToggle == null) return true;
-        Vector3 btnPos = btnToggle.transform.position;
-
-        if (handVisualizer != null)
-        {
-            if (handVisualizer.RightHandTracked &&
-                Vector3.Distance(handVisualizer.RightIndexTipPosition, btnPos) < pinchProximityRadius)
-                return true;
-            if (handVisualizer.LeftHandTracked &&
-                Vector3.Distance(handVisualizer.LeftIndexTipPosition, btnPos) < pinchProximityRadius)
-                return true;
-        }
-
-        // Fallback: read XRHandSubsystem directly
-        if (_xrHandSub != null && _xrHandSub.running)
-        {
-            if (CheckJointNearButton(_xrHandSub.rightHand, btnPos) ||
-                CheckJointNearButton(_xrHandSub.leftHand, btnPos))
-                return true;
-        }
-
-        return false;
-    }
-
-    bool CheckJointNearButton(XRHand hand, Vector3 btnPos)
-    {
-        if (!hand.isTracked) return false;
-        var indexTip = hand.GetJoint(XRHandJointID.IndexTip);
-        if (!indexTip.TryGetPose(out Pose pose)) return false;
-        return Vector3.Distance(pose.position, btnPos) < pinchProximityRadius;
     }
 
     void PollRemoteCommand()
@@ -637,7 +617,7 @@ public class SimpleRecordingController : MonoBehaviour
         {
             long frames = sensorRecorder != null ? sensorRecorder.FrameIndex : -1;
             string session = string.IsNullOrEmpty(_sessionDir) ? "none" : _sessionDir;
-            string text = $"recording={_recording}\nframes={frames}\nsession={session}\nhand_near_button={_handNearButton}\n";
+            string text = $"recording={_recording}\nframes={frames}\nsession={session}\n";
             File.WriteAllText(_remoteStatusPath, text);
         }
         catch (System.Exception e)
@@ -1215,7 +1195,7 @@ public class SimpleRecordingController : MonoBehaviour
         }
 
         SetStatus(
-            $"REC  {min:D2}:{sec:D2}\n" +
+            $"REC  {min:D2}:{sec:D2}   PINCH to stop\n" +
             $"Frames: {sensorRecorder.FrameIndex}  FPS: {fps:F1}/{sensorRecorder.sampleRateHz:F0}\n" +
             $"Hands: {handStatus}  IMU: {imuStatus}  Body: {bodyStatus}");
     }
@@ -1349,11 +1329,7 @@ public class SimpleRecordingController : MonoBehaviour
     void SetIdle()
     {
         SetHudVisible(true);
-        string hint;
-        if (requireHandNearButtonForPinch)
-            hint = _handNearButton ? "Pinch to record!" : "Move hand to button";
-        else
-            hint = "Pinch anywhere or press A";
+        string hint = "PINCH to start recording";
         SetStatus($"{hint}\nHands: {_handStatus}");
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
