@@ -55,6 +55,21 @@ public class SensorRecorder : MonoBehaviour
     private bool _hasPrevDerivedHeadVel;
     private Vector3 _prevDerivedHeadVel;
     private double _prevHeadPosTs;
+    // Rotation-based angular velocity derivation
+    private bool _hasPrevHeadRot;
+    private Quaternion _prevHeadRot;
+    private double _prevHeadRotTs;
+    // 3-frame sliding window for smoother position-derived acceleration
+    private Vector3 _posHistoryN0, _posHistoryN1, _posHistoryN2;
+    private double _posHistoryTs0, _posHistoryTs1, _posHistoryTs2;
+    private int _posHistoryCount;
+    // Low-pass filter state for derived acceleration
+    private Vector3 _lpfAccel;
+    private bool _hasLpfAccel;
+    private const float LPF_ALPHA = 0.35f;
+    // Derived IMU quality counters
+    private long _imuDerivedAccelFrameCount;
+    private long _imuDerivedGyroFrameCount;
     private bool _loggedImuNoGravity;
     private bool _loggedImuStale;
     private long _sampleCount;
@@ -132,7 +147,11 @@ public class SensorRecorder : MonoBehaviour
         if (!IsRecording) return;
         float now = Time.realtimeSinceStartup;
         if (now - _lastSample < _sampleInterval) return;
-        _lastSample = now;
+        // Advance by fixed interval to prevent timing drift (was: _lastSample = now)
+        _lastSample += _sampleInterval;
+        // Prevent spiral if we fell behind by more than 2 intervals
+        if (now - _lastSample > _sampleInterval * 2)
+            _lastSample = now - _sampleInterval;
         LastSampleRealtimeS = now;
         _elapsed = GetLiveSessionElapsed();
         SampleHeadPose();
@@ -140,8 +159,8 @@ public class SensorRecorder : MonoBehaviour
         SampleIMU();
         _sampleCount++;
         FrameIndex++;
-        // Flush every 60 frames to prevent data loss on crash/kill
-        if (FrameIndex % 60 == 0)
+        // Flush every 150 frames (~5s) to reduce I/O load while preventing data loss
+        if (FrameIndex % 150 == 0)
         {
             _headW?.Flush();
             _handW?.Flush();
@@ -178,6 +197,14 @@ public class SensorRecorder : MonoBehaviour
         _hasPrevHeadVel = false;
         _hasPrevHeadPos = false;
         _hasPrevDerivedHeadVel = false;
+        _hasPrevHeadRot = false;
+        _prevHeadRot = Quaternion.identity;
+        _prevHeadRotTs = 0;
+        _posHistoryCount = 0;
+        _hasLpfAccel = false;
+        _lpfAccel = Vector3.zero;
+        _imuDerivedAccelFrameCount = 0;
+        _imuDerivedGyroFrameCount = 0;
         LastHandTrackingReal = false;
         LastRealHandJointCount = 0;
         LastHandRotationVariance = 0f;
@@ -649,12 +676,54 @@ public class SensorRecorder : MonoBehaviour
         bool hasA = false;
         bool hasG = false;
 
+        // 1. Try XR-reported angular velocity first
         if (hmd.isValid && hmd.TryGetFeatureValue(CommonUsages.deviceAngularVelocity, out var rawGyro))
         {
-            gyro = rawGyro;
-            hasG = true;
+            if (rawGyro.sqrMagnitude > 1e-8f)
+            {
+                gyro = rawGyro;
+                hasG = true;
+            }
         }
 
+        // 2. Derive angular velocity from head rotation deltas if XR didn't provide it
+        if (!hasG && HasHeadPose)
+        {
+            double now = Time.realtimeSinceStartupAsDouble;
+            if (_hasPrevHeadRot)
+            {
+                double dt = now - _prevHeadRotTs;
+                if (dt > 1e-4 && dt < 0.2)
+                {
+                    // deltaRot = Inverse(prev) * cur  =>  rotation that happened during dt
+                    Quaternion deltaRot = Quaternion.Inverse(_prevHeadRot) * LastHeadRotation;
+                    // Normalize to avoid NaN from accumulated drift
+                    float mag = Mathf.Sqrt(deltaRot.x * deltaRot.x + deltaRot.y * deltaRot.y +
+                                           deltaRot.z * deltaRot.z + deltaRot.w * deltaRot.w);
+                    if (mag > 1e-6f)
+                    {
+                        deltaRot.x /= mag; deltaRot.y /= mag;
+                        deltaRot.z /= mag; deltaRot.w /= mag;
+                    }
+                    // Convert to angle-axis
+                    float halfAngle = Mathf.Acos(Mathf.Clamp(deltaRot.w, -1f, 1f));
+                    float sinHalf = Mathf.Sin(halfAngle);
+                    if (sinHalf > 1e-6f)
+                    {
+                        Vector3 axis = new Vector3(deltaRot.x, deltaRot.y, deltaRot.z) / sinHalf;
+                        float angle = 2f * halfAngle;
+                        gyro = axis * (angle / (float)dt);
+                        hasG = gyro.sqrMagnitude > 1e-8f;
+                        if (hasG) _imuDerivedGyroFrameCount++;
+                    }
+                }
+            }
+            _prevHeadRot = LastHeadRotation;
+            _prevHeadRotTs = Time.realtimeSinceStartupAsDouble;
+            _hasPrevHeadRot = true;
+        }
+
+        // 3. Try XR-reported acceleration
         if (hmd.isValid && hmd.TryGetFeatureValue(CommonUsages.deviceAcceleration, out var rawAccel))
         {
             if (rawAccel.sqrMagnitude > 1e-8f)
@@ -664,19 +733,21 @@ public class SensorRecorder : MonoBehaviour
             }
         }
 
+        // 4. Derive from XR velocity differentiation
         if (!hasA && hmd.isValid && hmd.TryGetFeatureValue(CommonUsages.deviceVelocity, out var vel))
         {
             double now = Time.realtimeSinceStartupAsDouble;
             if (_hasPrevHeadVel)
             {
                 double dt = now - _prevHeadVelTs;
-                if (dt > 1e-4)
+                if (dt > 1e-4 && dt < 0.2)
                 {
                     var derived = (vel - _prevHeadVel) / (float)dt;
                     if (derived.sqrMagnitude > 1e-8f)
                     {
-                        accel = derived;
+                        accel = ApplyLowPassFilter(derived);
                         hasA = true;
+                        _imuDerivedAccelFrameCount++;
                     }
                 }
             }
@@ -685,56 +756,51 @@ public class SensorRecorder : MonoBehaviour
             _hasPrevHeadVel = true;
         }
 
+        // 5. 3-frame sliding window position double-differentiation
         if (!hasA && HasHeadPose)
         {
             double now = Time.realtimeSinceStartupAsDouble;
-            if (_hasPrevHeadPos)
+            // Shift history window
+            _posHistoryN2 = _posHistoryN1; _posHistoryTs2 = _posHistoryTs1;
+            _posHistoryN1 = _posHistoryN0; _posHistoryTs1 = _posHistoryTs0;
+            _posHistoryN0 = LastHeadPosition; _posHistoryTs0 = now;
+            _posHistoryCount = Mathf.Min(_posHistoryCount + 1, 3);
+
+            if (_posHistoryCount >= 3)
             {
-                double dt = now - _prevHeadPosTs;
-                if (dt > 1e-4)
+                double dt01 = _posHistoryTs0 - _posHistoryTs1;
+                double dt12 = _posHistoryTs1 - _posHistoryTs2;
+                double dtAvg = (dt01 + dt12) * 0.5;
+                if (dtAvg > 1e-4 && dt01 < 0.2 && dt12 < 0.2)
                 {
-                    Vector3 velFromPose = (LastHeadPosition - _prevHeadPos) / (float)dt;
-                    if (_hasPrevDerivedHeadVel)
+                    Vector3 v01 = (_posHistoryN0 - _posHistoryN1) / (float)dt01;
+                    Vector3 v12 = (_posHistoryN1 - _posHistoryN2) / (float)dt12;
+                    Vector3 derived = (v01 - v12) / (float)dtAvg;
+                    if (derived.sqrMagnitude > 1e-8f)
                     {
-                        Vector3 derived = (velFromPose - _prevDerivedHeadVel) / (float)dt;
-                        if (derived.sqrMagnitude > 1e-8f)
-                        {
-                            accel = derived;
-                            hasA = true;
-                        }
+                        accel = ApplyLowPassFilter(derived);
+                        hasA = true;
+                        _imuDerivedAccelFrameCount++;
                     }
-                    _prevDerivedHeadVel = velFromPose;
-                    _hasPrevDerivedHeadVel = true;
                 }
-            }
-            _prevHeadPos = LastHeadPosition;
-            _prevHeadPosTs = now;
-            _hasPrevHeadPos = true;
-        }
-
-        if (!hasA)
-        {
-            Vector3 ua = Input.gyro.enabled ? Input.gyro.userAcceleration : Vector3.zero;
-            if (ua.sqrMagnitude > 1e-8f)
-            {
-                accel = ua;
-                hasA = true;
-            }
-        }
-
-        if (!hasA)
-        {
-            Vector3 ra = Input.acceleration;
-            if (ra.sqrMagnitude > 1e-8f)
-            {
-                accel = ra;
-                hasA = true;
             }
         }
 
         if (!hasA) accel = Vector3.zero;
         if (!hasG) gyro = Vector3.zero;
         return hasA || hasG;
+    }
+
+    Vector3 ApplyLowPassFilter(Vector3 raw)
+    {
+        if (!_hasLpfAccel)
+        {
+            _lpfAccel = raw;
+            _hasLpfAccel = true;
+            return raw;
+        }
+        _lpfAccel = Vector3.Lerp(_lpfAccel, raw, LPF_ALPHA);
+        return _lpfAccel;
     }
 
     void WriteControllerHandSkeletonFallback(string label, Vector3 wristPos, Quaternion wristRot)
@@ -1031,6 +1097,8 @@ public class SensorRecorder : MonoBehaviour
             j.AppendLine($"    \"imu_head_kinematics_fallback_frames\": {_imuHeadKinematicsFallbackFrameCount},");
             j.AppendLine($"    \"imu_unity_fallback_frames\": {_imuUnityFallbackFrameCount},");
             j.AppendLine($"    \"imu_native_stale_frames\": {_imuNativeStaleFrameCount},");
+            j.AppendLine($"    \"imu_derived_accel_frames\": {_imuDerivedAccelFrameCount},");
+            j.AppendLine($"    \"imu_derived_gyro_frames\": {_imuDerivedGyroFrameCount},");
             j.AppendLine($"    \"body_frames_sampled\": {_bodyFramesSampled},");
             j.AppendLine($"    \"body_native_frame_ratio\": {_bodyNativeFrameRatio:F4},");
             j.AppendLine($"    \"body_fallback_frame_ratio\": {_bodyFallbackFrameRatio:F4}");
@@ -1060,7 +1128,7 @@ public class SensorRecorder : MonoBehaviour
         _actionW?.Flush();
     }
 
-    StreamWriter W(string fn, string hdr) { var w = new StreamWriter(Path.Combine(_sessionDir, fn), false, new UTF8Encoding(false), 65536); w.WriteLine(hdr); return w; }
+    StreamWriter W(string fn, string hdr) { var w = new StreamWriter(Path.Combine(_sessionDir, fn), false, new UTF8Encoding(false), 131072); w.WriteLine(hdr); return w; }
     void Close(ref StreamWriter w) { w?.Flush(); w?.Close(); w?.Dispose(); w = null; }
     static string AppendReason(string current, string reason)
     {

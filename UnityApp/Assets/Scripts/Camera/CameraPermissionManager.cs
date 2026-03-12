@@ -194,7 +194,7 @@ public class CameraPermissionManager : MonoBehaviour
                 yield break;
             }
 
-            Debug.Log($"[{LOG_TAG}] Found {cameraIds.Length} cameras, enumerating...");
+            Debug.Log($"[{LOG_TAG}] Found {cameraIds.Length} cameras on PICO device, enumerating all...");
 
             string bestId = null;
             int bestWidth = 0, bestHeight = 0;
@@ -232,9 +232,46 @@ public class CameraPermissionManager : MonoBehaviour
                             }
                             catch { }
 
+                            // Get hardware level
+                            string hwLevel = "unknown";
+                            try
+                            {
+                                using (var hwKey = new AndroidJavaClass("android.hardware.camera2.CameraCharacteristics")
+                                    .GetStatic<AndroidJavaObject>("INFO_SUPPORTED_HARDWARE_LEVEL"))
+                                {
+                                    var hwObj = chars.Call<AndroidJavaObject>("get", hwKey);
+                                    if (hwObj != null)
+                                    {
+                                        int level = hwObj.Call<int>("intValue");
+                                        hwLevel = level == 0 ? "LIMITED" : level == 1 ? "FULL" : level == 2 ? "LEGACY" : level == 3 ? "3/LEVEL_3" : $"EXTERNAL({level})";
+                                        hwObj.Dispose();
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            // Get capabilities
+                            string capsStr = "";
+                            try
+                            {
+                                using (var capsKey = new AndroidJavaClass("android.hardware.camera2.CameraCharacteristics")
+                                    .GetStatic<AndroidJavaObject>("REQUEST_AVAILABLE_CAPABILITIES"))
+                                {
+                                    var capsObj = chars.Call<AndroidJavaObject>("get", capsKey);
+                                    if (capsObj != null)
+                                    {
+                                        var capsArr = AndroidJNIHelper.ConvertFromJNIArray<int[]>(capsObj.GetRawObject());
+                                        if (capsArr != null)
+                                            capsStr = string.Join(",", capsArr);
+                                        capsObj.Dispose();
+                                    }
+                                }
+                            }
+                            catch { }
+
                             // 0=BACK, 1=FRONT, 2=EXTERNAL
                             string facingStr = facing == 0 ? "BACK" : facing == 1 ? "FRONT" : facing == 2 ? "EXTERNAL" : $"UNKNOWN({facing})";
-                            Debug.Log($"[{LOG_TAG}] Camera {id}: facing={facingStr}, size={w}x{h}");
+                            Debug.Log($"[{LOG_TAG}] Camera {id}: facing={facingStr}, size={w}x{h}, hwLevel={hwLevel}, caps=[{capsStr}]");
 
                             // Prefer front-facing camera (egocentric on VR headsets)
                             // If no front camera, pick the highest-res one
@@ -266,6 +303,11 @@ public class CameraPermissionManager : MonoBehaviour
                 SelectedWidth = bestWidth;
                 SelectedHeight = bestHeight;
                 Debug.Log($"[{LOG_TAG}] Selected camera: id={SelectedCameraId}, {SelectedWidth}x{SelectedHeight}");
+            }
+            else
+            {
+                Debug.LogWarning($"[{LOG_TAG}] No suitable camera found among {cameraIds.Length} cameras. " +
+                    "On PICO, passthrough cameras may be consumed by the XR runtime and not accessible via Camera2 API.");
             }
         }
         catch (Exception e)

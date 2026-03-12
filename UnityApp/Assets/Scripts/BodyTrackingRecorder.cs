@@ -97,7 +97,12 @@ public class BodyTrackingRecorder : MonoBehaviour
         sensorRecorder?.LogAction("body_tracking_init", "runtime", $"available={_available};started={_bodyTrackingStarted};detail={availDetail}");
 
         if (!_available)
-            Debug.LogWarning("[Body] Body tracking unavailable at start; using synthetic 24-joint fallback.");
+        {
+            Debug.LogWarning("[Body] Body tracking unavailable at start; using kinematic IK 24-joint fallback. " +
+                "Native body tracking requires PICO Motion Tracker accessories.");
+            sensorRecorder?.LogAction("body_tracking_note", "hardware",
+                "body_tracking_requires_pico_motion_tracker_accessories;using_kinematic_ik_fallback");
+        }
     }
 
     public void StopCapture()
@@ -276,10 +281,11 @@ public class BodyTrackingRecorder : MonoBehaviour
         if (!_loggedFallbackActive)
         {
             _loggedFallbackActive = true;
-            Debug.LogWarning("[Body] Writing synthetic 24-joint fallback body pose.");
+            Debug.LogWarning("[Body] Writing kinematic IK 24-joint fallback body pose.");
         }
 
-        if (!BuildFallbackPose())
+        bool hasRealInput = BuildFallbackPose();
+        if (!hasRealInput)
         {
             for (int i = 0; i < 24; i++)
             {
@@ -290,9 +296,11 @@ public class BodyTrackingRecorder : MonoBehaviour
 
         double ts = sensorRecorder.GetLiveSessionElapsed();
         long frame = sensorRecorder.FrameIndex;
+        string source = hasRealInput ? "kinematic_ik" : "fallback";
         for (int i = 0; i < 24; i++)
         {
-            WriteJoint(ts, frame, i, BodyJointNames[i], _fallbackPos[i], _fallbackRot[i], 0.0f, "fallback", 0);
+            float conf = GetFallbackJointConfidence(i, hasRealInput);
+            WriteJoint(ts, frame, i, BodyJointNames[i], _fallbackPos[i], _fallbackRot[i], conf, source, 0);
         }
 
         LastNativeJointCount = 0;
@@ -300,7 +308,29 @@ public class BodyTrackingRecorder : MonoBehaviour
         LastFrameUsedFallback = true;
         _framesSampled++;
         _framesFallbackOnly++;
-        UpdateBodySourceState("fallback", 0);
+        UpdateBodySourceState(source, 0);
+    }
+
+    // Assign confidence per joint based on how much real tracking data informed it
+    private float GetFallbackJointConfidence(int jointId, bool hasRealInput)
+    {
+        if (!hasRealInput) return 0f;
+        // Joints driven by actual hand tracking positions get higher confidence
+        switch (jointId)
+        {
+            case 15: return 0.8f;  // Head - directly from head tracking
+            case 12: return 0.7f;  // Neck - derived from head
+            case 9: return 0.6f;   // Spine3 - interpolated from head
+            case 20: case 21: return 0.7f;  // Wrists - from hand tracking
+            case 22: case 23: return 0.65f; // Hands - from hand tracking + offset
+            case 18: case 19: return 0.5f;  // Elbows - IK solved from shoulder+wrist
+            case 16: case 17: return 0.45f; // Shoulders - head-derived
+            case 13: case 14: return 0.4f;  // Collars - head-derived
+            case 6: return 0.35f;  // Spine2
+            case 3: return 0.3f;   // Spine1
+            case 0: return 0.25f;  // Pelvis - estimated from head height
+            default: return 0.15f; // Lower body - largely estimated
+        }
     }
 
     private bool BuildFallbackPose()
@@ -324,6 +354,19 @@ public class BodyTrackingRecorder : MonoBehaviour
             headRot = SanitizeQuaternion(headRot);
         }
 
+        // Estimate spine orientation from head tilt (decompose head rotation into yaw-only torso)
+        Vector3 headFwd = headRot * Vector3.forward;
+        headFwd.y = 0f;
+        if (headFwd.sqrMagnitude < 1e-6f) headFwd = Vector3.forward;
+        headFwd.Normalize();
+        Quaternion torsoYaw = Quaternion.LookRotation(headFwd, Vector3.up);
+
+        // Blend head pitch into spine (reduced by 60% — torso doesn't pitch as much as head)
+        Vector3 headEuler = headRot.eulerAngles;
+        float headPitch = headEuler.x > 180f ? headEuler.x - 360f : headEuler.x;
+        float spinePitch = headPitch * 0.4f;
+        Quaternion torsoRot = torsoYaw * Quaternion.Euler(spinePitch, 0f, 0f);
+
         float headHeight = Mathf.Clamp(headPos.y, 1.1f, 2.1f);
         float pelvisY = Mathf.Max(0.75f, headHeight - 0.88f);
 
@@ -333,46 +376,65 @@ public class BodyTrackingRecorder : MonoBehaviour
         Vector3 spine2 = Vector3.Lerp(pelvis, neck, 0.62f);
         Vector3 spine1 = Vector3.Lerp(pelvis, neck, 0.38f);
 
-        Vector3 leftCollar = neck + headRot * new Vector3(-0.07f, 0.00f, 0.01f);
-        Vector3 rightCollar = neck + headRot * new Vector3(0.07f, 0.00f, 0.01f);
-        Vector3 leftShoulder = neck + headRot * new Vector3(-0.17f, -0.04f, 0.02f);
-        Vector3 rightShoulder = neck + headRot * new Vector3(0.17f, -0.04f, 0.02f);
+        Vector3 leftCollar = neck + torsoRot * new Vector3(-0.07f, 0.00f, 0.01f);
+        Vector3 rightCollar = neck + torsoRot * new Vector3(0.07f, 0.00f, 0.01f);
+        Vector3 leftShoulder = neck + torsoRot * new Vector3(-0.17f, -0.04f, 0.02f);
+        Vector3 rightShoulder = neck + torsoRot * new Vector3(0.17f, -0.04f, 0.02f);
 
-        Vector3 leftWristPos = headPos + headRot * new Vector3(-0.20f, -0.35f, 0.25f);
-        Vector3 rightWristPos = headPos + headRot * new Vector3(0.20f, -0.35f, 0.25f);
-        Quaternion leftWristRot = headRot;
-        Quaternion rightWristRot = headRot;
+        // Default wrist positions (arms at sides) if hand tracking unavailable
+        Vector3 leftWristPos = leftShoulder + torsoRot * new Vector3(-0.03f, -0.50f, 0.05f);
+        Vector3 rightWristPos = rightShoulder + torsoRot * new Vector3(0.03f, -0.50f, 0.05f);
+        Quaternion leftWristRot = torsoRot;
+        Quaternion rightWristRot = torsoRot;
+        bool hasLeftHand = false, hasRightHand = false;
 
         var left = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
         if (left.isValid)
         {
-            if (left.TryGetFeatureValue(CommonUsages.devicePosition, out var lp)) leftWristPos = lp;
+            if (left.TryGetFeatureValue(CommonUsages.devicePosition, out var lp)) { leftWristPos = lp; hasLeftHand = true; }
             if (left.TryGetFeatureValue(CommonUsages.deviceRotation, out var lq)) leftWristRot = SanitizeQuaternion(lq);
         }
 
         var right = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
         if (right.isValid)
         {
-            if (right.TryGetFeatureValue(CommonUsages.devicePosition, out var rp)) rightWristPos = rp;
+            if (right.TryGetFeatureValue(CommonUsages.devicePosition, out var rp)) { rightWristPos = rp; hasRightHand = true; }
             if (right.TryGetFeatureValue(CommonUsages.deviceRotation, out var rq)) rightWristRot = SanitizeQuaternion(rq);
         }
 
-        Vector3 leftElbow = Vector3.Lerp(leftShoulder, leftWristPos, 0.52f) + headRot * new Vector3(-0.02f, -0.01f, 0.02f);
-        Vector3 rightElbow = Vector3.Lerp(rightShoulder, rightWristPos, 0.52f) + headRot * new Vector3(0.02f, -0.01f, 0.02f);
+        // 2-bone IK for arms: solve elbow position from shoulder and wrist
+        const float upperArmLen = 0.28f;
+        const float forearmLen = 0.25f;
+        Vector3 leftElbow = SolveTwoBoneIK(leftShoulder, leftWristPos, upperArmLen, forearmLen,
+            torsoRot * Vector3.back + torsoRot * Vector3.left * 0.3f);
+        Vector3 rightElbow = SolveTwoBoneIK(rightShoulder, rightWristPos, upperArmLen, forearmLen,
+            torsoRot * Vector3.back + torsoRot * Vector3.right * 0.3f);
+
+        // Compute elbow/shoulder rotations from joint chain direction
+        Quaternion leftShoulderRot = ComputeLookRotation(leftShoulder, leftElbow, torsoRot);
+        Quaternion rightShoulderRot = ComputeLookRotation(rightShoulder, rightElbow, torsoRot);
+        Quaternion leftElbowRot = ComputeLookRotation(leftElbow, leftWristPos, leftShoulderRot);
+        Quaternion rightElbowRot = ComputeLookRotation(rightElbow, rightWristPos, rightShoulderRot);
 
         Vector3 leftHand = leftWristPos + leftWristRot * new Vector3(0f, 0f, 0.05f);
         Vector3 rightHand = rightWristPos + rightWristRot * new Vector3(0f, 0f, 0.05f);
 
-        Vector3 leftHip = pelvis + headRot * new Vector3(-0.10f, -0.02f, 0.00f);
-        Vector3 rightHip = pelvis + headRot * new Vector3(0.10f, -0.02f, 0.00f);
+        // Lower body remains estimated (no tracking input)
+        Vector3 leftHip = pelvis + torsoRot * new Vector3(-0.10f, -0.02f, 0.00f);
+        Vector3 rightHip = pelvis + torsoRot * new Vector3(0.10f, -0.02f, 0.00f);
         Vector3 leftKnee = leftHip + new Vector3(0f, -0.42f, 0.04f);
         Vector3 rightKnee = rightHip + new Vector3(0f, -0.42f, 0.04f);
         Vector3 leftAnkle = leftKnee + new Vector3(0f, -0.42f, -0.02f);
         Vector3 rightAnkle = rightKnee + new Vector3(0f, -0.42f, -0.02f);
-        Vector3 leftFoot = leftAnkle + headRot * new Vector3(0f, -0.05f, 0.12f);
-        Vector3 rightFoot = rightAnkle + headRot * new Vector3(0f, -0.05f, 0.12f);
+        Vector3 leftFoot = leftAnkle + torsoRot * new Vector3(0f, -0.05f, 0.12f);
+        Vector3 rightFoot = rightAnkle + torsoRot * new Vector3(0f, -0.05f, 0.12f);
 
-        Quaternion torsoRot = headRot;
+        // Spine rotations: interpolate between pelvis (torso yaw) and head
+        Quaternion pelvisRot = torsoYaw;
+        Quaternion spine1Rot = Quaternion.Slerp(pelvisRot, torsoRot, 0.33f);
+        Quaternion spine2Rot = Quaternion.Slerp(pelvisRot, torsoRot, 0.60f);
+        Quaternion spine3Rot = Quaternion.Slerp(pelvisRot, torsoRot, 0.85f);
+        Quaternion neckRot = Quaternion.Slerp(torsoRot, headRot, 0.5f);
 
         _fallbackPos[0] = pelvis;
         _fallbackPos[1] = leftHip;
@@ -399,32 +461,79 @@ public class BodyTrackingRecorder : MonoBehaviour
         _fallbackPos[22] = leftHand;
         _fallbackPos[23] = rightHand;
 
-        _fallbackRot[0] = torsoRot;
-        _fallbackRot[1] = torsoRot;
-        _fallbackRot[2] = torsoRot;
-        _fallbackRot[3] = torsoRot;
-        _fallbackRot[4] = torsoRot;
-        _fallbackRot[5] = torsoRot;
-        _fallbackRot[6] = torsoRot;
-        _fallbackRot[7] = torsoRot;
-        _fallbackRot[8] = torsoRot;
-        _fallbackRot[9] = torsoRot;
-        _fallbackRot[10] = torsoRot;
-        _fallbackRot[11] = torsoRot;
-        _fallbackRot[12] = torsoRot;
+        _fallbackRot[0] = pelvisRot;
+        _fallbackRot[1] = pelvisRot;
+        _fallbackRot[2] = pelvisRot;
+        _fallbackRot[3] = spine1Rot;
+        _fallbackRot[4] = pelvisRot;
+        _fallbackRot[5] = pelvisRot;
+        _fallbackRot[6] = spine2Rot;
+        _fallbackRot[7] = pelvisRot;
+        _fallbackRot[8] = pelvisRot;
+        _fallbackRot[9] = spine3Rot;
+        _fallbackRot[10] = pelvisRot;
+        _fallbackRot[11] = pelvisRot;
+        _fallbackRot[12] = neckRot;
         _fallbackRot[13] = torsoRot;
         _fallbackRot[14] = torsoRot;
         _fallbackRot[15] = headRot;
-        _fallbackRot[16] = torsoRot;
-        _fallbackRot[17] = torsoRot;
-        _fallbackRot[18] = leftWristRot;
-        _fallbackRot[19] = rightWristRot;
+        _fallbackRot[16] = leftShoulderRot;
+        _fallbackRot[17] = rightShoulderRot;
+        _fallbackRot[18] = leftElbowRot;
+        _fallbackRot[19] = rightElbowRot;
         _fallbackRot[20] = leftWristRot;
         _fallbackRot[21] = rightWristRot;
         _fallbackRot[22] = leftWristRot;
         _fallbackRot[23] = rightWristRot;
 
         return true;
+    }
+
+    /// <summary>
+    /// 2-bone IK: given shoulder and wrist, find elbow position.
+    /// Uses law of cosines with a pole vector hint for elbow direction.
+    /// </summary>
+    private static Vector3 SolveTwoBoneIK(Vector3 root, Vector3 target, float len1, float len2, Vector3 poleHint)
+    {
+        Vector3 toTarget = target - root;
+        float dist = toTarget.magnitude;
+        float totalLen = len1 + len2;
+
+        // If target is out of reach, extend arm straight
+        if (dist >= totalLen - 0.001f)
+        {
+            return Vector3.Lerp(root, target, len1 / totalLen);
+        }
+
+        // If target is too close (collapsed), push elbow outward
+        if (dist < Mathf.Abs(len1 - len2) + 0.001f)
+        {
+            Vector3 outDir = poleHint.normalized;
+            return root + toTarget * 0.5f + outDir * len1 * 0.5f;
+        }
+
+        // Law of cosines: angle at root
+        float cosAngle = (len1 * len1 + dist * dist - len2 * len2) / (2f * len1 * dist);
+        cosAngle = Mathf.Clamp(cosAngle, -1f, 1f);
+        float angle = Mathf.Acos(cosAngle);
+
+        // Build a coordinate frame along the shoulder->wrist axis
+        Vector3 fwd = toTarget / dist;
+        Vector3 side = Vector3.Cross(fwd, poleHint);
+        if (side.sqrMagnitude < 1e-6f)
+            side = Vector3.Cross(fwd, Vector3.up);
+        side.Normalize();
+        Vector3 bendDir = Vector3.Cross(side, fwd).normalized;
+
+        // Elbow position
+        return root + fwd * (len1 * Mathf.Cos(angle)) + bendDir * (len1 * Mathf.Sin(angle));
+    }
+
+    private static Quaternion ComputeLookRotation(Vector3 from, Vector3 to, Quaternion fallback)
+    {
+        Vector3 dir = to - from;
+        if (dir.sqrMagnitude < 1e-8f) return fallback;
+        return Quaternion.LookRotation(dir);
     }
 
     private void WriteJoint(double ts, long frame, int jointId, string jointName, Vector3 p, Quaternion q, float confidence, string source, int nativeJointCount)
@@ -586,9 +695,9 @@ public class BodyTrackingRecorder : MonoBehaviour
     {
         if (source == _lastSourceState) return;
 
-        if (source == "fallback")
+        if (source == "fallback" || source == "kinematic_ik")
         {
-            sensorRecorder?.LogAction("body_fallback_active", "body_pose", $"native_joint_count={nativeJointCount}");
+            sensorRecorder?.LogAction("body_fallback_active", "body_pose", $"source={source};native_joint_count={nativeJointCount}");
         }
         else if (source == "native")
         {

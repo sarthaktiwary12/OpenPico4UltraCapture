@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using UnityEngine;
 
 public class NativeIMUBridge : MonoBehaviour
@@ -101,6 +102,9 @@ public class NativeIMUBridge : MonoBehaviour
 
             if (IsActive) Debug.Log($"[IMU] Android sensors OK (acc={accOk}, grav={gravOk}, lin={linOk}, gyro={gyroOk})");
             else Debug.LogWarning("[IMU] No Android sensors registered, using Unity fallback only.");
+
+            // Probe PICO-specific sensor APIs as additional data sources
+            ProbePicoSensorAPIs();
         }
         catch (Exception e)
         {
@@ -276,6 +280,47 @@ public class NativeIMUBridge : MonoBehaviour
         _lastSensorUpdateS = Time.realtimeSinceStartup;
     }
 #endif
+
+    private void ProbePicoSensorAPIs()
+    {
+        // Try PICO-specific sensor APIs that may bypass Android SensorManager exclusion
+        try
+        {
+            // Probe PXR_Input.GetControllerSensorData for IMU from controllers
+            var pxrInputType = Type.GetType("Unity.XR.PXR.PXR_Input, Unity.XR.PICO");
+            if (pxrInputType != null)
+            {
+                var getSensorMethod = pxrInputType.GetMethod("GetControllerSensorData",
+                    BindingFlags.Public | BindingFlags.Static);
+                Debug.Log($"[IMU] PICO PXR_Input.GetControllerSensorData: {(getSensorMethod != null ? "found" : "not_found")}");
+            }
+            else
+            {
+                Debug.Log("[IMU] PICO PXR_Input type not found (non-PICO build or missing assembly)");
+            }
+
+            // Probe PXR_Plugin.Sensor for direct sensor access
+            var pxrPluginType = Type.GetType("Unity.XR.PXR.PXR_Plugin, Unity.XR.PICO");
+            if (pxrPluginType != null)
+            {
+                var sensorType = pxrPluginType.GetNestedType("Sensor", BindingFlags.Public | BindingFlags.NonPublic);
+                if (sensorType != null)
+                {
+                    var methods = sensorType.GetMethods(BindingFlags.Public | BindingFlags.Static);
+                    foreach (var m in methods)
+                        Debug.Log($"[IMU] PICO Sensor API: {m.Name}({string.Join(",", Array.ConvertAll(m.GetParameters(), p => p.ParameterType.Name))})");
+                }
+                else
+                {
+                    Debug.Log("[IMU] PICO PXR_Plugin.Sensor nested type not found");
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.Log($"[IMU] PICO sensor API probe failed: {e.Message}");
+        }
+    }
 
     public string BuildRegistrationStatus()
     {
