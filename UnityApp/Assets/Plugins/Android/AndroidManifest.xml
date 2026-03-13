@@ -17,6 +17,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- PICO-specific permissions -->
+    <uses-permission android:name="com.picovr.screencapture.permission.SHOT_AND_RECORD" />
     <uses-permission android:name="com.picovr.permission.HAND_TRACKING" />
     <uses-permission android:name="com.picovr.permission.BODY_TRACKING" />
     <uses-permission android:name="com.picovr.permission.SPATIAL_DATA" />
@@ -85,6 +86,8 @@
 
         <meta-data android:name="pvr.app.type" android:value="vr" />
         <meta-data android:name="pvr.sdk.version" android:value="PICO Unity Integration SDK" />
+        <meta-data android:name="enable_vst" android:value="1" />
+        <meta-data android:name="enable_mr" android:value="1" />
         <!-- handtracking/controller metadata intentionally omitted here.
              HandTrackingManifestPostProcessor removes these at build time to prevent
              startup hangs on Pico 4 Ultra firmware. -->

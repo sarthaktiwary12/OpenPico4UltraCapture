@@ -132,6 +132,7 @@ sudo apt install ffmpeg  # or brew install ffmpeg
 ## Capture Protocol
 
 **Execute this sequence for every recording:**
+Control mode: clap-only start/stop (pinch is intentionally disabled to avoid accidental toggles).
 
 ```
 1. PUT ON HEADSET in passthrough mode
@@ -140,42 +141,33 @@ sudo apt install ffmpeg  # or brew install ffmpeg
 2. OPEN the DataCapture app (our Unity app)
    The app starts/stops `pov_video.mp4` together with sensor recording.
 
-3. SELECT scenario + task type from dropdowns
-
-4. TAP "Start Session"
-   → Sensor recording begins
-   → Status shows "RECORDING"
+3. CLAP HANDS TOGETHER (start gesture)
+   → Sensor recording + `pov_video.mp4` begin together
    → Preflight health check runs (hand tracking + IMU gravity)
    → Start is blocked when real hand tracking is unavailable (prevents unusable sessions)
 
-5. CLAP HANDS TOGETHER (sync gesture)
-   → App detects clap, plays audio beep
-   → "✓ Sync OK" appears on screen
-   → This syncs video↔sensor timeline
+4. OPTIONAL: CLAP AGAIN during recording to create a sync marker
+   → App logs `sync_clap` and plays audio beep
+   → This helps video↔sensor alignment checks
 
-6. TAP "Start Task"
-   → Logs task_start timestamp
-
-7. PERFORM THE TASK
+5. PERFORM THE TASK
    ⚠ SLOW, DELIBERATE, ROBOT-LIKE MOVEMENTS
    ⚠ KEEP BOTH HANDS VISIBLE IN CAMERA VIEW
    ⚠ AVOID FAST HEAD MOVEMENTS
    Target: ~2 minutes
 
-8. TAP "End Task"
-   → Logs task_end timestamp
+6. CLAP HANDS TOGETHER (stop gesture)
+   → Session ends and files finalize
+   → On-device validation runs
 
-9. TAP "Stop Session"
-    → On-device validation runs
-    → Review the pass/fail checklist
-
-10. REVIEW VALIDATION REPORT
+7. REVIEW VALIDATION REPORT
     Fix any issues, re-record if needed
 ```
 
-### ADB Remote Start/Stop (Headset-on-neck testing)
+### Optional ADB Remote Start/Stop (Debug)
 
-The app can be controlled over ADB without pressing the in-headset button:
+ADB remote control is available for debugging but is disabled by default in-scene.
+To use this path, enable `enableAdbRemoteControl` on `SimpleRecordingController`.
 
 ```bash
 # Start

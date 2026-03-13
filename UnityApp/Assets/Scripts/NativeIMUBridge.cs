@@ -77,10 +77,28 @@ public class NativeIMUBridge : MonoBehaviour
             _linListener = new SL(OnSensorChanged);
             _gyroListener = new SL(OnSensorChanged);
 
-            bool accOk = _accSensor != null && _sensorManager.Call<bool>("registerListener", _accListener, _accSensor, 0);
-            bool gravOk = _gravSensor != null && _sensorManager.Call<bool>("registerListener", _gravListener, _gravSensor, 0);
-            bool linOk = _linSensor != null && _sensorManager.Call<bool>("registerListener", _linListener, _linSensor, 0);
-            bool gyroOk = _gyroSensor != null && _sensorManager.Call<bool>("registerListener", _gyroListener, _gyroSensor, 0);
+            bool accOk = TryRegisterSensor(_accSensor, _accListener);
+            bool gravOk = TryRegisterSensor(_gravSensor, _gravListener);
+            bool linOk = TryRegisterSensor(_linSensor, _linListener);
+            bool gyroOk = TryRegisterSensor(_gyroSensor, _gyroListener);
+
+            // If default sensors are null, try enumerating all available sensors of each type
+            if (!accOk)
+            {
+                _accSensor = TryEnumerateAndRegister(TYPE_ACCELEROMETER, _accListener, "accelerometer");
+                accOk = _accSensor != null;
+            }
+            if (!gyroOk)
+            {
+                _gyroSensor = TryEnumerateAndRegister(TYPE_GYROSCOPE, _gyroListener, "gyroscope");
+                gyroOk = _gyroSensor != null;
+            }
+            if (!linOk)
+            {
+                _linSensor = TryEnumerateAndRegister(TYPE_LINEAR_ACCELERATION, _linListener, "linear_accel");
+                linOk = _linSensor != null;
+            }
+
             AccSensorRegistered = accOk;
             GyroSensorRegistered = gyroOk;
             GravitySensorRegistered = gravOk;
@@ -221,6 +239,45 @@ public class NativeIMUBridge : MonoBehaviour
                 _loggedFirstAccelSample = false;
             }
         }
+    }
+
+    private bool TryRegisterSensor(AndroidJavaObject sensor, SL listener)
+    {
+        if (sensor == null || _sensorManager == null) return false;
+        // Try SENSOR_DELAY_FASTEST(0), then SENSOR_DELAY_GAME(1), then SENSOR_DELAY_NORMAL(3)
+        if (_sensorManager.Call<bool>("registerListener", listener, sensor, 0)) return true;
+        if (_sensorManager.Call<bool>("registerListener", listener, sensor, 1)) return true;
+        if (_sensorManager.Call<bool>("registerListener", listener, sensor, 3)) return true;
+        return false;
+    }
+
+    private AndroidJavaObject TryEnumerateAndRegister(int sensorType, SL listener, string label)
+    {
+        if (_sensorManager == null) return null;
+        try
+        {
+            using var sensorList = _sensorManager.Call<AndroidJavaObject>("getSensorList", sensorType);
+            if (sensorList == null) return null;
+            int count = sensorList.Call<int>("size");
+            Debug.Log($"[IMU] Enumerating {label}: {count} sensors available");
+            for (int i = 0; i < count; i++)
+            {
+                var sensor = sensorList.Call<AndroidJavaObject>("get", i);
+                if (sensor == null) continue;
+                Debug.Log($"[IMU] {label}[{i}]: {DescribeSensor(sensor)}");
+                if (TryRegisterSensor(sensor, listener))
+                {
+                    Debug.Log($"[IMU] Registered non-default {label} sensor: {DescribeSensor(sensor)}");
+                    return sensor;
+                }
+                sensor.Dispose();
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.Log($"[IMU] {label} enumeration failed: {e.Message}");
+        }
+        return null;
     }
 
     private static string DescribeSensor(AndroidJavaObject sensor)

@@ -683,6 +683,7 @@ public class SensorRecorder : MonoBehaviour
             {
                 gyro = rawGyro;
                 hasG = true;
+                _imuDerivedGyroFrameCount++;
             }
         }
 
@@ -730,6 +731,7 @@ public class SensorRecorder : MonoBehaviour
             {
                 accel = rawAccel;
                 hasA = true;
+                _imuDerivedAccelFrameCount++;
             }
         }
 

@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR;
+using UnityEngine.XR.Hands;
 #if PICO_XR
 using Unity.XR.PXR;
 #endif
@@ -9,12 +11,17 @@ public class SyncManager : MonoBehaviour
 {
     public SensorRecorder sensorRecorder;
     public AudioSource audioSource;
-    public float clapThresholdM = 0.08f, clapResetM = 0.20f, cooldownS = 2f;
+    [Tooltip("Palms must be within this distance for a sync clap.")]
+    public float clapThresholdM = 0.08f;
+    public float cooldownS = 2f;
     public bool SyncAchieved { get; private set; }
     public int SyncCount { get; private set; }
     public double SyncTimestamp { get; private set; }
-    private bool _armed = true; private float _lastClap = -99f;
+    private float _lastClap = -99f;
     AudioClip _beep;
+    private XRHandSubsystem _xrHandSub;
+    private bool _xrHandSubSearched;
+    private int _frameCount;
 
     void Start()
     {
@@ -26,10 +33,20 @@ public class SyncManager : MonoBehaviour
     void Update()
     {
         if (sensorRecorder == null || !sensorRecorder.IsRecording) return;
-        if (!GetPalm("left", out var lp) || !GetPalm("right", out var rp)) return;
-        float d = Vector3.Distance(lp, rp);
-        if (_armed && d < clapThresholdM && Time.time - _lastClap > cooldownS) { OnClap(d, lp, rp); _armed = false; _lastClap = Time.time; }
-        else if (!_armed && d > clapResetM) _armed = true;
+        _frameCount++;
+        if (_frameCount % 2 != 0) return;
+
+        if (!GetPalmPoses(out Pose lp, out Pose rp)) return;
+        float d = Vector3.Distance(lp.position, rp.position);
+
+        // Reject garbage: XRInput fallback reports identical positions (d≈0)
+        if (d < 0.01f) return;
+
+        if (d < clapThresholdM && Time.time - _lastClap > cooldownS)
+        {
+            OnClap(d, lp.position, rp.position);
+            _lastClap = Time.time;
+        }
     }
 
     void OnClap(float dist, Vector3 lp, Vector3 rp)
@@ -50,37 +67,61 @@ public class SyncManager : MonoBehaviour
         audioSource.Play(); SyncAchieved = true;
     }
 
-    bool GetPalm(string side, out Vector3 pos)
+    bool GetPalmPoses(out Pose leftPose, out Pose rightPose)
     {
-        pos = Vector3.zero;
+        leftPose = Pose.identity;
+        rightPose = Pose.identity;
+
+        // Primary: XRHands subsystem (full pose with orientation)
+        if (!_xrHandSubSearched || (_xrHandSub == null && _frameCount % 90 == 0))
+        {
+            _xrHandSubSearched = true;
+            var subs = new List<XRHandSubsystem>();
+            SubsystemManager.GetSubsystems(subs);
+            _xrHandSub = subs.Count > 0 ? subs[0] : null;
+        }
+
+        if (_xrHandSub != null && _xrHandSub.running &&
+            _xrHandSub.leftHand.isTracked && _xrHandSub.rightHand.isTracked)
+        {
+            var lJoint = _xrHandSub.leftHand.GetJoint(XRHandJointID.Palm);
+            var rJoint = _xrHandSub.rightHand.GetJoint(XRHandJointID.Palm);
+            if (lJoint.TryGetPose(out leftPose) && rJoint.TryGetPose(out rightPose))
+                return true;
+        }
+
 #if PICO_XR
+        // Secondary: PICO native (has orientation)
+        if (TryGetPicoPalmPose(HandType.HandLeft, out leftPose) &&
+            TryGetPicoPalmPose(HandType.HandRight, out rightPose))
+            return true;
+#endif
+
+        return false;
+    }
+
+#if PICO_XR
+    static bool TryGetPicoPalmPose(HandType handType, out Pose pose)
+    {
+        pose = Pose.identity;
         try
         {
-            var ht = side == "left" ? HandType.HandLeft : HandType.HandRight;
             var jl = new HandJointLocations();
-            if (PXR_Plugin.HandTracking.UPxr_GetHandTrackerJointLocations(ht, ref jl) && jl.jointLocations != null && jl.jointLocations.Length > 0)
+            if (PXR_Plugin.HandTracking.UPxr_GetHandTrackerJointLocations(handType, ref jl)
+                && jl.jointLocations != null && jl.jointLocations.Length > 0)
             {
-                if (((ulong)jl.jointLocations[0].locationStatus & (ulong)HandLocationStatus.PositionValid) != 0)
+                var j = jl.jointLocations[0];
+                if (((ulong)j.locationStatus & (ulong)HandLocationStatus.PositionValid) != 0)
                 {
-                    pos = jl.jointLocations[0].pose.Position.ToVector3();
+                    pose = new Pose(j.pose.Position.ToVector3(), j.pose.Orientation.ToQuat());
                     return true;
                 }
             }
         }
-        catch
-        {
-        }
-#endif
-
-        var node = side == "left" ? XRNode.LeftHand : XRNode.RightHand;
-        var dev = InputDevices.GetDeviceAtXRNode(node);
-        if (dev.isValid && dev.TryGetFeatureValue(CommonUsages.devicePosition, out var p))
-        {
-            pos = p;
-            return true;
-        }
+        catch { }
         return false;
     }
+#endif
 
     static AudioClip MakeBeep(float hz, float dur)
     {

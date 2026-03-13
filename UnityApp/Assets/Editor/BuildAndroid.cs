@@ -323,10 +323,14 @@ public static class BuildAndroid
         controller.txtStatus = txtStatus;
         controller.txtButtonLabel = btnLabel;
         controller.btnImage = btnImage;
-        controller.enableHandPinchToggle = true;
-        controller.requireHandNearButtonForPinch = false;
+        controller.enableGestureToggle = true;
+        controller.gestureWarmupSeconds = 5f;
+        controller.gestureTriggerDistanceM = 0.10f;
+        controller.gestureHoldDurationS = 1.5f;
+        controller.gestureCooldownSeconds = 2.0f;
+        controller.requireBothHandsTrackedForGesture = true;
         controller.blockStartWhenHandTrackingUnavailable = true;
-        controller.enableAdbRemoteControl = true;
+        controller.enableAdbRemoteControl = false;
         controller.remoteCommandPollInterval = 0.25f;
 
         EditorSceneManager.SaveScene(scene, ScenePath);
@@ -703,6 +707,7 @@ public static class BuildAndroid
         SetBool("bodyTracking", true);
         SetBool("spatialMesh", true);
         SetBool("videoSeeThrough", true);
+        SetBool("usePremultipliedAlpha", true);
 
         return component;
     }
@@ -791,12 +796,44 @@ public class HandTrackingManifestPostProcessor : UnityEditor.Android.IPostGenera
 
     public void OnPostGenerateGradleAndroidProject(string path)
     {
-        string manifestPath = Path.Combine(path, "src", "main", "AndroidManifest.xml");
-        if (!File.Exists(manifestPath))
+        var manifests = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddIfExists(string manifestPath)
         {
-            Debug.LogWarning("[HandTrackingManifest] Manifest not found at: " + manifestPath);
+            if (File.Exists(manifestPath))
+                manifests.Add(Path.GetFullPath(manifestPath));
+        }
+
+        // Unity passes either unityLibrary or launcher path depending on version/setup.
+        AddIfExists(Path.Combine(path, "src", "main", "AndroidManifest.xml"));
+
+        var parent = Directory.GetParent(path)?.FullName;
+        if (!string.IsNullOrEmpty(parent))
+        {
+            AddIfExists(Path.Combine(parent, "unityLibrary", "src", "main", "AndroidManifest.xml"));
+            AddIfExists(Path.Combine(parent, "launcher", "src", "main", "AndroidManifest.xml"));
+        }
+
+        if (manifests.Count == 0)
+        {
+            Debug.LogWarning("[HandTrackingManifest] No AndroidManifest.xml files found to patch.");
             return;
         }
+
+        int patched = 0;
+        foreach (var manifestPath in manifests)
+        {
+            if (PatchManifest(manifestPath))
+                patched++;
+        }
+
+        Debug.Log($"[HandTrackingManifest] Patched {patched}/{manifests.Count} manifests.");
+    }
+
+    private static bool PatchManifest(string manifestPath)
+    {
+        if (!File.Exists(manifestPath))
+            return false;
 
         var doc = new System.Xml.XmlDocument();
         doc.Load(manifestPath);
@@ -808,7 +845,7 @@ public class HandTrackingManifestPostProcessor : UnityEditor.Android.IPostGenera
         if (appNode == null)
         {
             Debug.LogWarning("[HandTrackingManifest] <application> node not found");
-            return;
+            return false;
         }
 
         // Remove ALL input mode metadata to let Pico use its default behavior.
@@ -818,6 +855,8 @@ public class HandTrackingManifestPostProcessor : UnityEditor.Android.IPostGenera
         RemoveMetaData(appNode, nsManager, "handtracking");
         RemoveMetaData(appNode, nsManager, "Hand_Tracking_HighFrequency");
         RemoveMetaData(appNode, nsManager, "controller");
+        EnsureMetaData(doc, appNode, nsManager, "enable_vst", "1");
+        EnsureMetaData(doc, appNode, nsManager, "enable_mr", "1");
 
         // Ensure hand tracking permission exists (needed for runtime hand tracking)
         var manifestNode = doc.SelectSingleNode("//manifest");
@@ -836,7 +875,8 @@ public class HandTrackingManifestPostProcessor : UnityEditor.Android.IPostGenera
         }
 
         doc.Save(manifestPath);
-        Debug.Log("[HandTrackingManifest] Manifest configured: removed handtracking+controller metadata (default mode)");
+        Debug.Log($"[HandTrackingManifest] Patched: {manifestPath}");
+        return true;
     }
 
     private static void EnsureMetaData(System.Xml.XmlDocument doc, System.Xml.XmlNode appNode,
