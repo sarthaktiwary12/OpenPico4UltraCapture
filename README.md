@@ -6,7 +6,7 @@ Every TELUS requirement mapped to how this pipeline delivers it:
 
 | TELUS Requirement | How We Deliver | File/Location |
 |---|---|---|
-| **Egocentric RGB video (Mono/Stereo)** | PICO spatial video recording (stereo, 2048×1536 @ 60fps) | `video_blurred.mp4` |
+| **Egocentric RGB video (Mono/Stereo)** | MediaProjection screen capture (1280×720 @ 30fps) | `video_blurred.mp4` |
 | **Depth maps (if available)** | iToF-fed spatial mesh snapshots as PLY files | `depth_mesh/*.ply` |
 | **Head pose** | XR InputDevice tracking, 60Hz | `head_pose.csv` |
 | **Hand joint positions** | PXR_HandTracking: 26 joints/hand, position+rotation+radius | `hand_joints.csv` |
@@ -32,38 +32,36 @@ Every TELUS requirement mapped to how this pipeline delivers it:
 ┌─────────────────────────────────────────────────────────────┐
 │                    PICO 4 Ultra                             │
 │                                                             │
-│  SYSTEM LEVEL                    UNITY APP                  │
-│  ┌──────────────┐               ┌───────────────────────┐  │
-│  │ Spatial Video │               │ SensorRecorder        │  │
-│  │ Recorder     │   SYNC via    │  ├ head_pose.csv      │  │
-│  │              │◄─ audio beep ─│  ├ hand_joints.csv    │  │
-│  │ 2K stereo    │   + clap      │  ├ imu.csv            │  │
-│  │ @ 60fps      │   gesture     │  ├ action_log.csv     │  │
-│  │              │               │  └ calibration.json   │  │
-│  └──────┬───────┘               │                       │  │
-│         │                       │ SyncManager           │  │
-│         │                       │  ├ Clap detection     │  │
-│         │                       │  └ Audio beep emit    │  │
-│         │                       │                       │  │
-│         │                       │ SpatialMeshCapture    │  │
-│         │                       │  └ depth_mesh/*.ply   │  │
-│         │                       │                       │  │
-│         │                       │ NativeIMUBridge       │  │
-│         │                       │  └ Android sensors    │  │
-│         │                       │                       │  │
-│         │                       │ RecordingController   │  │
-│         │                       │  └ In-VR UI + QA      │  │
-│  ───────┼───────────────────────┼───────────────────────┤  │
-│         │            ADB Pull   │                       │  │
-└─────────┼───────────────────────┼───────────────────────┘  │
-          ▼                       ▼                          │
-┌─────────────────────────────────────────────────────────┐  │
-│                    postprocess.py                        │  │
-│  sync → blur faces → validate → MANIFEST.json → deliver │  │
-└─────────────────────────────────────────────────────────┘  │
+│  UNITY APP (all-in-one)                                     │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │ SimpleRecordingController                             │  │
+│  │  ├ AndroidScreenRecorder (MediaProjection)            │  │
+│  │  │   └ pov_video.mp4 (1280×720 @ 30fps)              │  │
+│  │  │     HUD hidden during capture (clean passthrough)  │  │
+│  │  │                                                    │  │
+│  │  ├ SensorRecorder                                     │  │
+│  │  │   ├ head_pose.csv      (60Hz 6DoF)                 │  │
+│  │  │   ├ hand_joints.csv   (26 joints/hand @ 60Hz)      │  │
+│  │  │   ├ imu.csv            (accel+gyro+gravity)        │  │
+│  │  │   ├ action_log.csv                                 │  │
+│  │  │   └ calibration.json                               │  │
+│  │  │                                                    │  │
+│  │  ├ BodyTrackingRecorder   (24 joints body_pose.csv)   │  │
+│  │  ├ SyncManager            (clap detection + beep)     │  │
+│  │  ├ SpatialMeshCapture     (depth_mesh/*.ply)          │  │
+│  │  └ NativeIMUBridge        (Android SensorManager)     │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                       ADB Pull                              │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                    postprocess.py                        │
+│  sync → blur faces → validate → MANIFEST.json → deliver │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**Key insight**: Video (`pov_video.mp4`) and sensor streams are started/stopped by the same Unity capture flow, then aligned with clap/beep sync markers.
+**Key insight**: Video (`pov_video.mp4`) is captured via Android MediaProjection (same process as screen recording) started by the Unity app itself. The HUD is hidden during capture so MediaProjection records clean passthrough footage. Video and sensor streams start/stop together and are aligned with clap/beep sync markers.
 
 ---
 

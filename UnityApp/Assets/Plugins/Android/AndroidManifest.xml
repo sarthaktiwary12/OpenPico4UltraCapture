@@ -78,12 +78,6 @@
             </intent-filter>
         </receiver>
 
-        <!-- Camera permission request activity from questcameralib.aar -->
-        <activity
-            android:name="com.samusynth.questcamera.core.CameraPermissionRequestActivity"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"
-            android:exported="false" />
-
         <meta-data android:name="pvr.app.type" android:value="vr" />
         <meta-data android:name="pvr.sdk.version" android:value="PICO Unity Integration SDK" />
         <meta-data android:name="enable_vst" android:value="1" />

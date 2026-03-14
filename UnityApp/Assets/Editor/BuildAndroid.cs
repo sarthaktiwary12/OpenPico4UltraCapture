@@ -227,6 +227,9 @@ public static class BuildAndroid
         var body = bodyGo.AddComponent<BodyTrackingRecorder>();
         body.sensorRecorder = sensor;
 
+        var screenRecGo = new GameObject("AndroidScreenRecorder");
+        var screenRec = screenRecGo.AddComponent<AndroidScreenRecorder>();
+
         // ── World Space Canvas (VR passthrough mode) ──
         var canvasGo = new GameObject("RecordingCanvas");
         var canvas = canvasGo.AddComponent<Canvas>();
@@ -316,7 +319,6 @@ public static class BuildAndroid
         controller.syncManager = sync;
         controller.spatialMeshCapture = mesh;
         controller.bodyTrackingRecorder = body;
-        // CameraPermissionManager is auto-created at runtime by SimpleRecordingController
         controller.hudRoot = canvasGo;
         controller.showHudInHeadset = true;
         controller.btnToggle = btnToggle;
@@ -330,6 +332,7 @@ public static class BuildAndroid
         controller.gestureCooldownSeconds = 2.0f;
         controller.requireBothHandsTrackedForGesture = true;
         controller.blockStartWhenHandTrackingUnavailable = true;
+        controller.screenRecorder = screenRec;
         controller.enableAdbRemoteControl = false;
         controller.remoteCommandPollInterval = 0.25f;
 

@@ -41,7 +41,16 @@ public class AndroidScreenRecorderBridge {
             Log.e(TAG, "requestStart failed: no current activity");
             return false;
         }
-        if (recording) return true;
+        if (recording) {
+            // Already recording — stop current recording and restart with new output path.
+            // The existing MediaProjection consent is consumed, so we stop+re-request.
+            Log.i(TAG, "Already recording, stopping before restarting with new path: " + outPath);
+            Intent stopIntent = new Intent(activity, ScreenRecorderService.class);
+            stopIntent.setAction(ScreenRecorderService.ACTION_STOP);
+            activity.startService(stopIntent);
+            recording = false;
+            // Small delay to let the service finalize, then fall through to start new recording
+        }
         if (outPath == null || outPath.isEmpty()) {
             sendEvent("error:empty_output_path");
             Log.e(TAG, "requestStart failed: empty output path");

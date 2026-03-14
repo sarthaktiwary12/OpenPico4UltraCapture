@@ -17,12 +17,7 @@ public class SimpleRecordingController : MonoBehaviour
     public SyncManager syncManager;
     public SpatialMeshCapture spatialMeshCapture;
     public BodyTrackingRecorder bodyTrackingRecorder;
-    public CameraPermissionManager cameraPermissionManager;
-
-    [Header("Camera2 Settings")]
-    public int videoFps = 30;
-    public int videoBitrateMbps = 8;
-    public int videoIFrameInterval = 1;
+    public AndroidScreenRecorder screenRecorder;
 
     [Header("UI")]
     public GameObject hudRoot;
@@ -76,10 +71,6 @@ public class SimpleRecordingController : MonoBehaviour
     // Hand tracking live status (shown on screen in idle state)
     private string _handStatus = "waiting...";
 
-    // Camera2 video capture
-    private Camera2SessionManager _cam2Session;
-    private Camera2VideoRecorder _cam2Recorder;
-
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
         "/sdcard/PICO/SpatialVideo",
@@ -97,11 +88,6 @@ public class SimpleRecordingController : MonoBehaviour
         "/sdcard/Recordings"
     };
 
-    // PICO screen recorder state
-    private bool _picoScreenRecorderAvailable;
-    private System.Type _picoScreenRecorderType;
-    private bool _picoScreenRecorderActive;
-
     // MediaProjection recorder output path
     private string _screenrecordPath;
 
@@ -115,15 +101,6 @@ public class SimpleRecordingController : MonoBehaviour
 
     void Start()
     {
-        if (cameraPermissionManager == null)
-            cameraPermissionManager = FindObjectOfType<CameraPermissionManager>();
-        if (cameraPermissionManager == null)
-        {
-            var go = new GameObject("CameraPermissionManager");
-            cameraPermissionManager = go.AddComponent<CameraPermissionManager>();
-            Debug.Log("[Controller] Auto-created CameraPermissionManager");
-        }
-
         if (handVisualizer == null)
             handVisualizer = new GameObject("HandVisualizer").AddComponent<HandVisualizer>();
 
@@ -794,7 +771,8 @@ public class SimpleRecordingController : MonoBehaviour
             if (txtButtonLabel != null) txtButtonLabel.text = "STOP";
             if (btnImage != null) btnImage.color = new Color(0.8f, 0.2f, 0.2f, 1f);
             SetStatus("REC  00:00\n\nFrames: 0");
-            SetHudVisible(true);
+            // Hide HUD so it does not appear in the MediaProjection capture
+            SetHudVisible(false);
 
             Debug.Log("[Controller] RECORDING STARTED -> " + _sessionDir);
         }
@@ -883,34 +861,16 @@ public class SimpleRecordingController : MonoBehaviour
     {
         _videoBackend = "none";
 
-        // Primary: Camera2 API via questcameralib.aar
-        if (TryStartCamera2Video())
+        // Primary: MediaProjection via AndroidScreenRecorder
+        if (TryStartMediaProjection())
         {
-            _videoBackend = "camera2";
-            sensorRecorder.LogAction("video_start", _videoBackend, "pending");
-            AddVideoDiag("camera2_start=pending");
+            _videoBackend = "media_projection";
+            sensorRecorder.LogAction("video_start", _videoBackend, "requested");
+            AddVideoDiag("media_projection_start=requested");
             return;
         }
 
-        // Second: PICO SDK PXR_ScreenRecorder (reflection-safe)
-        if (TryStartPicoScreenRecorder())
-        {
-            _videoBackend = "pico_screen_recorder";
-            sensorRecorder.LogAction("video_start", _videoBackend, "ok");
-            AddVideoDiag("pico_screen_recorder_start=ok");
-            return;
-        }
-
-        // Third: PICO-specific broadcast actions (multiple known action names)
-        if (TryStartPicoBroadcast())
-        {
-            _videoBackend = "pico_broadcast";
-            sensorRecorder.LogAction("video_start", _videoBackend, "pending_dispatch_ok");
-            AddVideoDiag("pico_broadcast_start=dispatch_ok");
-            return;
-        }
-
-        // Last resort: generic shell broadcast
+        // Fallback: shell broadcast (unlikely to work but kept for completeness)
         if (TryStartVideoShellBroadcast())
         {
             _videoBackend = "shell_broadcast";
@@ -919,141 +879,23 @@ public class SimpleRecordingController : MonoBehaviour
             return;
         }
 
-        sensorRecorder.LogAction("video_start", "none", "failed");
+        sensorRecorder.LogAction("video_start", "none", "all_backends_failed");
         Debug.LogWarning("[Video] Failed to start recording with all backends.");
-    }
-
-    bool TryStartCamera2Video()
-    {
-#if UNITY_ANDROID && !UNITY_EDITOR
-        try
-        {
-            if (cameraPermissionManager == null || !cameraPermissionManager.IsReady)
-            {
-                Debug.LogWarning("[Video] CameraPermissionManager not ready");
-                return false;
-            }
-
-            var cameraManager = cameraPermissionManager.CameraManager;
-            string cameraId = cameraPermissionManager.SelectedCameraId;
-            int w = cameraPermissionManager.SelectedWidth;
-            int h = cameraPermissionManager.SelectedHeight;
-
-            if (cameraManager == null || string.IsNullOrEmpty(cameraId))
-            {
-                Debug.LogWarning("[Video] No camera available");
-                return false;
-            }
-
-            // Create recorder
-            _cam2Recorder = new Camera2VideoRecorder();
-            if (!_cam2Recorder.Initialize(w, h, _directVideoPath, videoFps, videoBitrateMbps, videoIFrameInterval))
-            {
-                Debug.LogError("[Video] Camera2 recorder init failed");
-                _cam2Recorder = null;
-                return false;
-            }
-
-            // Open camera session
-            _cam2Session = new Camera2SessionManager();
-            if (!_cam2Session.Open(cameraManager, cameraId, _cam2Recorder.JavaInstance))
-            {
-                Debug.LogError("[Video] Camera2 session open failed");
-                _cam2Recorder.Close();
-                _cam2Recorder = null;
-                _cam2Session = null;
-                return false;
-            }
-
-            // Wait briefly for session to be ready, then start recording
-            StartCoroutine(StartCamera2RecordingDelayed());
-            return true;
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogError($"[Video] Camera2 start error: {e.Message}\n{e.StackTrace}");
-            CleanupCamera2();
-            return false;
-        }
-#else
-        return false;
-#endif
-    }
-
-    IEnumerator StartCamera2RecordingDelayed()
-    {
-        // Give Camera2 session time to establish
-        yield return new WaitForSeconds(0.5f);
-
-        float deadline = Time.realtimeSinceStartup + 3f;
-        while (_cam2Session != null && !_cam2Session.IsOpen && Time.realtimeSinceStartup < deadline)
-            yield return null;
-
-        if (_cam2Recorder != null)
-        {
-            if (_cam2Recorder.StartRecording())
-            {
-                Debug.Log("[Video] Camera2 recording started successfully");
-                sensorRecorder?.LogAction("video_start", "camera2", "ok");
-                AddVideoDiag("camera2_start=ok");
-            }
-            else
-            {
-                Debug.LogError("[Video] Camera2 StartRecording call failed");
-                sensorRecorder?.LogAction("video_start", "camera2", "failed");
-                AddVideoDiag("camera2_start=failed");
-                if (TryStartPicoBroadcast())
-                {
-                    _videoBackend = "pico_broadcast";
-                    sensorRecorder?.LogAction("video_start", "pico_broadcast", "pending_dispatch_ok");
-                    AddVideoDiag("camera2_start_failed_fallback_pico_service=dispatch_ok");
-                }
-                else if (TryStartVideoShellBroadcast())
-                {
-                    _videoBackend = "shell_broadcast";
-                    sensorRecorder?.LogAction("video_start", "shell_broadcast", "pending_dispatch_ok");
-                    AddVideoDiag("camera2_start_failed_fallback_shell=dispatch_ok");
-                }
-            }
-        }
-    }
-
-    void CleanupCamera2()
-    {
-        _cam2Recorder?.Close();
-        _cam2Recorder = null;
-        _cam2Session?.Close();
-        _cam2Session = null;
     }
 
     void StopVideoRecording()
     {
         bool stopped = false;
 
-        if (_videoBackend == "camera2")
+        if (_videoBackend == "media_projection")
         {
-            stopped = _cam2Recorder?.StopRecording() ?? false;
-            _cam2Session?.Close();
-            _cam2Session = null;
+            stopped = TryStopMediaProjection();
             sensorRecorder.LogAction("video_stop", _videoBackend, stopped ? "ok" : "failed");
-            AddVideoDiag($"camera2_stop={(stopped ? "ok" : "failed")}");
+            AddVideoDiag($"media_projection_stop={(stopped ? "ok" : "failed")}");
             return;
         }
 
-        if (_videoBackend == "pico_screen_recorder")
-        {
-            stopped = TryStopPicoScreenRecorder();
-            sensorRecorder.LogAction("video_stop", _videoBackend, stopped ? "ok" : "failed");
-            AddVideoDiag($"pico_screen_recorder_stop={(stopped ? "ok" : "failed")}");
-            return;
-        }
-
-        if (_videoBackend == "pico_broadcast")
-        {
-            stopped = TryStopPicoBroadcast();
-        }
-
-        if (!stopped && (_videoBackend == "shell_broadcast" || _videoBackend == "pico_broadcast"))
+        if (_videoBackend == "shell_broadcast")
         {
             stopped = TryStopVideoShellBroadcast();
         }
@@ -1067,111 +909,53 @@ public class SimpleRecordingController : MonoBehaviour
         AddVideoDiag($"stop={(stopped ? "dispatch_ok" : "failed")}");
     }
 
-    bool TryStartPicoScreenRecorder()
+    bool TryStartMediaProjection()
     {
 #if UNITY_ANDROID && !UNITY_EDITOR
-        try
-        {
-            // Probe for PXR_ScreenRecorder via reflection (SDK version dependent)
-            if (_picoScreenRecorderType == null)
-            {
-                _picoScreenRecorderType = System.Type.GetType("Unity.XR.PXR.PXR_ScreenRecorder, Unity.XR.PICO");
-                if (_picoScreenRecorderType == null)
-                {
-                    Debug.Log("[Video] PXR_ScreenRecorder not found in SDK");
-                    AddVideoDiag("pico_screen_recorder=type_not_found");
-                    return false;
-                }
-            }
-
-            var startMethod = _picoScreenRecorderType.GetMethod("StartScreenRecord",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-            if (startMethod == null)
-            {
-                Debug.Log("[Video] PXR_ScreenRecorder.StartScreenRecord method not found");
-                AddVideoDiag("pico_screen_recorder=method_not_found");
-                return false;
-            }
-
-            var paramInfos = startMethod.GetParameters();
-            object result;
-            if (paramInfos.Length == 0)
-            {
-                result = startMethod.Invoke(null, null);
-            }
-            else
-            {
-                // Some SDK versions accept (string outputPath)
-                result = startMethod.Invoke(null, new object[] { _directVideoPath });
-            }
-
-            _picoScreenRecorderAvailable = true;
-            _picoScreenRecorderActive = true;
-            Debug.Log($"[Video] PXR_ScreenRecorder.StartScreenRecord invoked, result={result}");
-            return true;
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Video] PXR_ScreenRecorder start failed: {e.Message}");
-            AddVideoDiag($"pico_screen_recorder_error={e.GetType().Name}");
-        }
-#endif
-        return false;
-    }
-
-    bool TryStopPicoScreenRecorder()
-    {
-#if UNITY_ANDROID && !UNITY_EDITOR
-        if (!_picoScreenRecorderActive || _picoScreenRecorderType == null) return false;
-        try
-        {
-            var stopMethod = _picoScreenRecorderType.GetMethod("StopScreenRecord",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-            if (stopMethod == null) return false;
-
-            object result = stopMethod.Invoke(null, null);
-            _picoScreenRecorderActive = false;
-            Debug.Log($"[Video] PXR_ScreenRecorder.StopScreenRecord invoked, result={result}");
-            return true;
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogWarning($"[Video] PXR_ScreenRecorder stop failed: {e.Message}");
-        }
-#endif
-        return false;
-    }
-
-    bool TryStartPicoBroadcast()
-    {
-#if UNITY_ANDROID && !UNITY_EDITOR
-        // Use Android MediaProjection via our ScreenRecorderService + AndroidScreenRecorderBridge.
+        // Use Android MediaProjection via AndroidScreenRecorderBridge.
         // This shows a system consent dialog; once the user grants, recording starts automatically.
         try
         {
             string outputPath = Path.Combine(_sessionDir, "pov_video.mp4");
             _screenrecordPath = outputPath;
 
+            // If the AndroidScreenRecorder MonoBehaviour is wired up, delegate to it
+            if (screenRecorder != null)
+            {
+                bool requested = screenRecorder.StartRecording(outputPath);
+                if (requested)
+                {
+                    Debug.Log($"[Video] MediaProjection recording requested via AndroidScreenRecorder: {outputPath}");
+                    AddVideoDiag($"media_projection_start=requested;path={outputPath};via=component");
+                    return true;
+                }
+                Debug.LogWarning($"[Video] AndroidScreenRecorder.StartRecording returned false: {screenRecorder.LastError}");
+                AddVideoDiag($"media_projection_start=component_returned_false;err={screenRecorder.LastError}");
+            }
+
+            // Fallback: call AndroidScreenRecorderBridge directly
             using var bridgeClass = new AndroidJavaClass("com.sentientx.datacapture.AndroidScreenRecorderBridge");
             var bridge = bridgeClass.CallStatic<AndroidJavaObject>("getInstance");
             if (bridge == null)
             {
                 Debug.LogWarning("[Video] AndroidScreenRecorderBridge.getInstance() returned null");
+                AddVideoDiag("media_projection_start=bridge_null");
                 return false;
             }
 
             // Tell the bridge which Unity GameObject receives events
             bridge.Call("setUnityCallbackObject", gameObject.name);
 
-            bool requested = bridge.Call<bool>("requestStart", outputPath, 1280, 720, 8000000, 30);
-            if (requested)
+            bool started = bridge.Call<bool>("requestStart", outputPath, 1280, 720, 8000000, 30);
+            if (started)
             {
-                Debug.Log($"[Video] MediaProjection recording requested: {outputPath}");
-                AddVideoDiag($"media_projection_start=requested;path={outputPath}");
+                Debug.Log($"[Video] MediaProjection recording requested via bridge: {outputPath}");
+                AddVideoDiag($"media_projection_start=requested;path={outputPath};via=bridge");
                 return true;
             }
 
             Debug.LogWarning("[Video] MediaProjection requestStart returned false");
+            AddVideoDiag("media_projection_start=bridge_returned_false");
         }
         catch (System.Exception e)
         {
@@ -1203,24 +987,34 @@ public class SimpleRecordingController : MonoBehaviour
         }
     }
 
-    bool TryStopPicoBroadcast()
+    bool TryStopMediaProjection()
     {
 #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
+            // Prefer the component if available
+            if (screenRecorder != null)
+            {
+                bool stopped = screenRecorder.StopRecording();
+                Debug.Log($"[Video] MediaProjection stop via component: {stopped}");
+                AddVideoDiag($"media_projection_stop_component={stopped}");
+                return stopped;
+            }
+
             using var bridgeClass = new AndroidJavaClass("com.sentientx.datacapture.AndroidScreenRecorderBridge");
             var bridge = bridgeClass.CallStatic<AndroidJavaObject>("getInstance");
             if (bridge != null)
             {
                 bool stopped = bridge.Call<bool>("stopRecording");
-                Debug.Log($"[Video] MediaProjection stop: {stopped}");
-                AddVideoDiag($"media_projection_stop={stopped}");
+                Debug.Log($"[Video] MediaProjection stop via bridge: {stopped}");
+                AddVideoDiag($"media_projection_stop_bridge={stopped}");
                 return stopped;
             }
         }
         catch (System.Exception e)
         {
             Debug.LogWarning($"[Video] MediaProjection stop failed: {e.Message}");
+            AddVideoDiag($"media_projection_stop_error={e.Message}");
         }
 #endif
         return false;
@@ -1319,42 +1113,8 @@ public class SimpleRecordingController : MonoBehaviour
         string resolvedPath = null;
         long resolvedSize = 0;
 
-        // Camera2 writes directly to _directVideoPath.
-        if (_videoBackend == "camera2" && !string.IsNullOrEmpty(_directVideoPath))
-        {
-            _cam2Recorder?.Close();
-            _cam2Recorder = null;
-
-            long lastSize = -1;
-            int stableHits = 0;
-            for (int i = 0; i < 24; i++)
-            {
-                if (TryGetFileSize(_directVideoPath, out long size))
-                {
-                    if (size == lastSize && size > 0) stableHits++;
-                    else stableHits = 0;
-                    lastSize = size;
-                    if (stableHits >= 2)
-                    {
-                        videoSaved = true;
-                        resolvedPath = _directVideoPath;
-                        resolvedSize = size;
-                        break;
-                    }
-                }
-                yield return new WaitForSeconds(0.5f);
-            }
-
-            if (!videoSaved)
-            {
-                failureReason = "camera2_output_missing_or_unstable";
-                sensorRecorder?.LogAction("video_save_failed", _videoBackend, failureReason);
-                sensorRecorder?.LogAction("video_not_found", _videoBackend, failureReason);
-            }
-        }
-
-        // screenrecord writes directly to _screenrecordPath in session dir.
-        if (!videoSaved && _videoBackend == "pico_broadcast" && !string.IsNullOrEmpty(_screenrecordPath))
+        // MediaProjection writes directly to _screenrecordPath in session dir.
+        if (!videoSaved && _videoBackend == "media_projection" && !string.IsNullOrEmpty(_screenrecordPath))
         {
             // screenrecord needs a moment to finalize the mp4 after SIGTERM
             yield return new WaitForSeconds(1.5f);
@@ -1381,9 +1141,23 @@ public class SimpleRecordingController : MonoBehaviour
 
             if (!videoSaved)
             {
-                failureReason = "screenrecord_output_missing_or_unstable";
-                sensorRecorder?.LogAction("video_save_failed", _videoBackend, failureReason);
-                Debug.LogWarning($"[Video] screenrecord file not found at {_screenrecordPath}");
+                // Fallback: check if the video was written to a different session directory
+                // (happens when MediaProjection consent dialog creates a race between sessions)
+                string fallbackVideo = FindRecentVideoInSessionDirs();
+                if (fallbackVideo != null && TryCopyVideoToSession(fallbackVideo, out string destPath, out long destSize, out string copyErr))
+                {
+                    videoSaved = true;
+                    resolvedPath = destPath;
+                    resolvedSize = destSize;
+                    sensorRecorder?.LogAction("video_recovered", "cross_session_copy", $"src={fallbackVideo};size={destSize}");
+                    Debug.Log($"[Video] Recovered video from other session: {fallbackVideo} -> {destPath} ({destSize} bytes)");
+                }
+                else
+                {
+                    failureReason = "screenrecord_output_missing_or_unstable";
+                    sensorRecorder?.LogAction("video_save_failed", _videoBackend, failureReason);
+                    Debug.LogWarning($"[Video] screenrecord file not found at {_screenrecordPath}");
+                }
             }
         }
 
@@ -1465,6 +1239,53 @@ public class SimpleRecordingController : MonoBehaviour
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
         if (btnImage != null) btnImage.color = new Color(0.2f, 0.7f, 0.2f, 1f);
         SetStatus(statusMsg);
+    }
+
+    /// <summary>
+    /// Check other session directories for a recent pov_video.mp4 that was written
+    /// during this session's recording window (handles MediaProjection consent race).
+    /// </summary>
+    string FindRecentVideoInSessionDirs()
+    {
+        try
+        {
+            string captureRoot = Path.Combine(Application.persistentDataPath, "dataset_capture");
+            if (!Directory.Exists(captureRoot)) return null;
+
+            string best = null;
+            long bestModified = 0;
+
+            foreach (string dir in Directory.GetDirectories(captureRoot))
+            {
+                if (dir == _sessionDir) continue; // Skip our own session
+                string candidate = Path.Combine(dir, "pov_video.mp4");
+                if (!File.Exists(candidate)) continue;
+
+                var info = new FileInfo(candidate);
+                long modifiedMs = new System.DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeMilliseconds();
+
+                // Only consider files modified AFTER this session's video start
+                // and within a reasonable window (5 minutes)
+                if (modifiedMs > _videoStartTimeMs && modifiedMs < _videoStartTimeMs + 300000 && info.Length > 10000)
+                {
+                    if (modifiedMs > bestModified)
+                    {
+                        bestModified = modifiedMs;
+                        best = candidate;
+                    }
+                }
+            }
+
+            if (best != null)
+                Debug.Log($"[Video] Found cross-session video: {best} (modified {bestModified})");
+
+            return best;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[Video] FindRecentVideoInSessionDirs error: {e.Message}");
+            return null;
+        }
     }
 
     string FindNewestVideo(out long bestTime)
@@ -1781,7 +1602,6 @@ public class SimpleRecordingController : MonoBehaviour
         try
         {
             StopVideoRecording();
-            CleanupCamera2();
             bodyTrackingRecorder?.StopCapture();
             spatialMeshCapture?.StopCapture();
             sensorRecorder.StopSession("session_end_crash", "reason=application_quit");
