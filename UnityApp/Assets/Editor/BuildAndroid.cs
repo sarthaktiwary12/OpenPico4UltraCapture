@@ -327,13 +327,13 @@ public static class BuildAndroid
         controller.btnImage = btnImage;
         controller.enableGestureToggle = true;
         controller.gestureWarmupSeconds = 5f;
-        controller.gestureTriggerDistanceM = 0.10f;
-        controller.gestureHoldDurationS = 1.5f;
-        controller.gestureCooldownSeconds = 2.0f;
+        controller.gestureTriggerDistanceM = 0.06f;
+        controller.gestureHoldDurationS = 3.0f;
+        controller.gestureCooldownSeconds = 5.0f;
         controller.requireBothHandsTrackedForGesture = true;
         controller.blockStartWhenHandTrackingUnavailable = true;
         controller.screenRecorder = screenRec;
-        controller.enableAdbRemoteControl = false;
+        controller.enableAdbRemoteControl = true;
         controller.remoteCommandPollInterval = 0.25f;
 
         EditorSceneManager.SaveScene(scene, ScenePath);

@@ -37,15 +37,15 @@ public class SimpleRecordingController : MonoBehaviour
     public bool enableGestureToggle = true;
     public float gestureWarmupSeconds = 5f;
     [Tooltip("Palms must be within this distance (m) to count as together.")]
-    public float gestureTriggerDistanceM = 0.10f;
+    public float gestureTriggerDistanceM = 0.06f;
     [Tooltip("Seconds the palms-together pose must be held to trigger.")]
-    public float gestureHoldDurationS = 1.5f;
+    public float gestureHoldDurationS = 3.0f;
     [Tooltip("Cooldown (s) after a successful gesture before another can trigger.")]
-    public float gestureCooldownSeconds = 2.0f;
+    public float gestureCooldownSeconds = 5.0f;
     public bool requireBothHandsTrackedForGesture = true;
 
     [Header("Remote Control")]
-    public bool enableAdbRemoteControl = false;
+    public bool enableAdbRemoteControl = true;
     public float remoteCommandPollInterval = 0.25f;
 
     private bool _recording;
@@ -70,6 +70,18 @@ public class SimpleRecordingController : MonoBehaviour
 
     // Hand tracking live status (shown on screen in idle state)
     private string _handStatus = "waiting...";
+
+    // Audio cues for clear recording feedback
+    private AudioSource _audioSource;
+    private AudioClip _startSound;
+    private AudioClip _stopSound;
+    private AudioClip _tickSound;
+    private float _nextTickTime;
+    private const float TICK_INTERVAL = 15f; // soft tick every 15s during recording
+
+    // Recording indicator (small red dot, visible to operator, minimal in video)
+    private GameObject _recordingDot;
+    private Image _recordingDotImage;
 
     // Known PICO video save directories
     static readonly string[] VideoDirs = {
@@ -121,9 +133,23 @@ public class SimpleRecordingController : MonoBehaviour
         }
 
         if (btnToggle != null) btnToggle.onClick.AddListener(OnToggle);
+
+        // Audio cues for recording feedback
+        _audioSource = gameObject.GetComponent<AudioSource>();
+        if (_audioSource == null) _audioSource = gameObject.AddComponent<AudioSource>();
+        _audioSource.playOnAwake = false;
+        _audioSource.spatialBlend = 0f; // 2D sound (not positional)
+        _audioSource.volume = 1.0f;
+        _startSound = MakeTone(new[] { 440f, 554f, 659f, 880f }, 0.12f, 0.7f); // ascending C major arpeggio
+        _stopSound = MakeTone(new[] { 880f, 659f, 554f, 440f }, 0.12f, 0.7f);  // descending
+        _tickSound = MakeTone(new[] { 600f }, 0.05f, 0.25f);                     // soft tick
+
+        // Recording indicator dot (small red circle in top-left corner)
+        CreateRecordingDot();
+
         SetHudVisible(true);
         SetIdle();
-        Debug.Log("[Controller] Ready. Press palms together and hold 1.5s to start/stop (hands-only mode).");
+        Debug.Log($"[Controller] Ready. Palms together + hold {gestureHoldDurationS:F1}s to start/stop.");
         StartCoroutine(LogDiagnostics());
         StartCoroutine(InitHandTrackingRuntime());
     }
@@ -313,6 +339,14 @@ public class SimpleRecordingController : MonoBehaviour
             {
                 RenderLiveStatus();
                 RunRecordingWatchdog();
+                PulseRecordingDot();
+
+                // Periodic tick so operator knows recording is still active
+                if (Time.time >= _nextTickTime)
+                {
+                    PlaySound(_tickSound);
+                    _nextTickTime = Time.time + TICK_INTERVAL;
+                }
             }
             else
             {
@@ -339,6 +373,7 @@ public class SimpleRecordingController : MonoBehaviour
     private float _gestureHoldStart = -1f;   // Time.time when hold began, -1 = not holding
     private float _lastGestureTime = -99f;
     private string _lastGestureSource = "none";
+    private int _gestureTickCount; // how many ticks played during current hold
     private static string _gestureLogPath;
     private int _gestureDiagCounter;
 
@@ -420,13 +455,22 @@ public class SimpleRecordingController : MonoBehaviour
             if (_gestureHoldStart < 0f)
             {
                 _gestureHoldStart = now;
+                _gestureTickCount = 0;
                 GestureLog($"HOLD START d={palmDistance:F3}m src={source}");
             }
 
             float held = now - _gestureHoldStart;
 
+            // Play tick every second during hold so operator hears the countdown
+            int expectedTicks = (int)(held);
+            if (expectedTicks > _gestureTickCount)
+            {
+                _gestureTickCount = expectedTicks;
+                PlaySound(_tickSound);
+            }
+
             if (_handFrameCount % 24 == 0)
-                _handStatus = $"src={source} d={palmDistance:F2}m HOLD {held:F1}/{gestureHoldDurationS:F1}s";
+                _handStatus = $"d={palmDistance:F2}m HOLD {held:F0}/{gestureHoldDurationS:F0}s";
 
             if (held >= gestureHoldDurationS)
             {
@@ -767,12 +811,14 @@ public class SimpleRecordingController : MonoBehaviour
             _recording = true;
             _startTime = Time.time;
             _stallDetectedLogged = false;
+            _nextTickTime = Time.time + TICK_INTERVAL;
 
-            if (txtButtonLabel != null) txtButtonLabel.text = "STOP";
-            if (btnImage != null) btnImage.color = new Color(0.8f, 0.2f, 0.2f, 1f);
-            SetStatus("REC  00:00\n\nFrames: 0");
-            // Hide HUD so it does not appear in the MediaProjection capture
+            // Hide the main HUD but show recording dot
             SetHudVisible(false);
+            SetRecordingDotVisible(true);
+
+            // LOUD audio cue: ascending tone = RECORDING STARTED
+            PlaySound(_startSound);
 
             Debug.Log("[Controller] RECORDING STARTED -> " + _sessionDir);
         }
@@ -836,6 +882,10 @@ public class SimpleRecordingController : MonoBehaviour
                 $"hand_real_ratio={sensorRecorder.RealHandFrameRatio:F3};imu_gravity_ratio={sensorRecorder.ImuGravityFrameRatio:F3};body_joints={bodyTrackingRecorder?.LastWrittenJointCount ?? 0};body_native_ratio={bodyTrackingRecorder?.NativeFrameRatio ?? 0f:F3};body_fallback_ratio={bodyTrackingRecorder?.FallbackOnlyFrameRatio ?? 0f:F3}");
 
             _recording = false;
+
+            // LOUD audio cue: descending tone = RECORDING STOPPED
+            PlaySound(_stopSound);
+            SetRecordingDotVisible(false);
 
             SetHudVisible(true);
             if (txtButtonLabel != null) txtButtonLabel.text = "SAVING...";
@@ -1688,10 +1738,77 @@ public class SimpleRecordingController : MonoBehaviour
         return $"Quality H={handPct:F0}% IMU={imuPct:F0}% BodyNative={bodyNativePct:F0}%";
     }
 
+    // ── Audio cue generation ──
+
+    static AudioClip MakeTone(float[] freqs, float noteDuration, float volume)
+    {
+        int sr = 44100;
+        int totalSamples = (int)(sr * noteDuration * freqs.Length);
+        var data = new float[totalSamples];
+        int samplesPerNote = (int)(sr * noteDuration);
+        for (int n = 0; n < freqs.Length; n++)
+        {
+            float freq = freqs[n];
+            for (int i = 0; i < samplesPerNote && (n * samplesPerNote + i) < totalSamples; i++)
+            {
+                float t = (float)i / sr;
+                float env = Mathf.Min(t / 0.005f, 1f) * Mathf.Min((noteDuration - t) / 0.01f, 1f);
+                data[n * samplesPerNote + i] = Mathf.Sin(2f * Mathf.PI * freq * t) * env * volume;
+            }
+        }
+        var clip = AudioClip.Create("tone", totalSamples, 1, sr, false);
+        clip.SetData(data, 0);
+        return clip;
+    }
+
+    void PlaySound(AudioClip clip)
+    {
+        if (_audioSource != null && clip != null)
+            _audioSource.PlayOneShot(clip);
+    }
+
+    // ── Recording indicator dot ──
+
+    void CreateRecordingDot()
+    {
+        // Create a small red dot that renders in world space, visible to operator
+        // Small enough to crop from training video if needed
+        if (hudRoot == null) return;
+        var canvas = hudRoot.GetComponent<Canvas>();
+        if (canvas == null) return;
+
+        _recordingDot = new GameObject("RecordingDot");
+        _recordingDot.transform.SetParent(canvas.transform, false);
+        _recordingDotImage = _recordingDot.AddComponent<Image>();
+        _recordingDotImage.color = new Color(1f, 0.15f, 0.15f, 0.95f);
+        var rt = _recordingDot.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0f, 1f);
+        rt.anchorMax = new Vector2(0f, 1f);
+        rt.pivot = new Vector2(0f, 1f);
+        rt.sizeDelta = new Vector2(24f, 24f);
+        rt.anchoredPosition = new Vector2(12f, -12f);
+        _recordingDot.SetActive(false);
+    }
+
+    void SetRecordingDotVisible(bool visible)
+    {
+        if (_recordingDot != null) _recordingDot.SetActive(visible);
+    }
+
+    void PulseRecordingDot()
+    {
+        if (_recordingDotImage == null) return;
+        // Pulse alpha between 0.4 and 0.95
+        float t = (Mathf.Sin(Time.time * 3f) + 1f) * 0.5f;
+        float alpha = Mathf.Lerp(0.4f, 0.95f, t);
+        _recordingDotImage.color = new Color(1f, 0.15f, 0.15f, alpha);
+    }
+
     void SetIdle()
     {
         SetHudVisible(true);
-        string hint = "PALMS TOGETHER + HOLD to start";
+        SetRecordingDotVisible(false);
+        string hint = $"PALMS TOGETHER + HOLD {gestureHoldDurationS:F0}s to start";
         string lastGesture = _lastGestureTime > 0f ? $"Last trigger: {_lastGestureSource}" : "Last trigger: -";
         SetStatus($"{hint}\nHands: {_handStatus}\n{lastGesture}");
         if (txtButtonLabel != null) txtButtonLabel.text = "RECORD";
